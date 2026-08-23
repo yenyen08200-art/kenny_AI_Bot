@@ -1,0 +1,28 @@
+{
+  "name": "claude-project",
+  "version": "1.0.0",
+  "description": "",
+  "main": "daily-bot.js",
+  "scripts": {
+    "start": "node webhook.js",
+    "briefing": "node daily-bot.js",
+    "calendar": "node calendar.js",
+    "webhook": "node webhook.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@line/bot-sdk": "^9.9.0",
+    "axios": "^1.19.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "googleapis": "^176.0.0"
+  }
+}

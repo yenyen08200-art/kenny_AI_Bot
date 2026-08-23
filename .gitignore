@@ -1,0 +1,11 @@
+node_modules/
+logs/
+
+# 敏感資訊,不可外洩
+.env
+credentials.json
+token.json
+
+# 不屬於這個專案的其他資料夾(各自獨立,不應混進這個 repo)
+/AutoExpireBot/
+/pos-system/
