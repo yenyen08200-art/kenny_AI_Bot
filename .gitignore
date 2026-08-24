@@ -1,10 +1,15 @@
 node_modules/
+functions/node_modules/
 logs/
+.firebase/
 
 # 敏感資訊,不可外洩
 .env
+functions/.env
 credentials.json
 token.json
+token.json.bak
+*.bak
 
 # 不屬於這個專案的其他資料夾(各自獨立,不應混進這個 repo)
 /AutoExpireBot/

@@ -13,7 +13,8 @@ const { google } = require('googleapis');
 const ROOT = path.join(__dirname, '..');
 const CREDENTIALS_PATH = path.join(ROOT, 'credentials.json');
 const TOKEN_PATH = path.join(ROOT, 'token.json');
-const SCOPES = ['https://www.googleapis.com/auth/calendar'];
+// 記帳/筆記需要 Sheets 權限;新增 scope 後必須刪掉 token.json 重新授權一次
+const SCOPES = ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/spreadsheets'];
 
 function loadCredentials() {
   if (!fs.existsSync(CREDENTIALS_PATH)) {

@@ -1,0 +1,479 @@
+// 純規則(不呼叫任何 AI)判斷訊息意圖 + 解析中文時間片語
+// 涵蓋日常大部分句型;規則判斷不出來時,回傳 null,交給上層 fallback 給 Claude
+
+const WEEKDAY_MAP = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
+
+const WEATHER_KEYWORDS = /天氣|會不會下雨|降雨|要不要帶傘|氣溫|會下雨嗎/;
+const SCHEDULE_KEYWORDS = /行程|事情|安排|有沒有事|待辦|有什麼事/;
+
+// 「品項 金額」這種簡短記帳寫法,遇到下列字詞就不當成記帳(避免把時間、行程誤判成金額)
+const NOT_EXPENSE_HINTS = /[點時:︰]|行程|天氣|明天|今天|後天|大後天|禮拜|星期|週|號|度|%|會議|提醒/;
+
+function getTaipeiNow() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const get = (type) => Number(parts.find((p) => p.type === type).value);
+  return { year: get('year'), month: get('month'), day: get('day') };
+}
+
+function addDays({ year, month, day }, n) {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  d.setUTCDate(d.getUTCDate() + n);
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+}
+
+function taipeiDateToISO({ year, month, day, hour, minute }) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00+08:00`;
+}
+
+// 解析「今天/明天/後天/大後天/禮拜X/下禮拜X」,回傳 {year, month, day} 或 null
+function parseDateOffset(text, now) {
+  if (/大後天/.test(text)) return addDays(now, 3);
+  if (/後天/.test(text)) return addDays(now, 2);
+  if (/明天|明日/.test(text)) return addDays(now, 1);
+  if (/今天|今日|今晚|今早/.test(text)) return addDays(now, 0);
+
+  const weekdayMatch = text.match(/(下)?(?:禮拜|週|星期)([一二三四五六日天])/);
+  if (weekdayMatch) {
+    const isNextWeek = !!weekdayMatch[1];
+    const targetDow = WEEKDAY_MAP[weekdayMatch[2]];
+    const nowDate = new Date(Date.UTC(now.year, now.month - 1, now.day));
+    const currentDow = nowDate.getUTCDay();
+    let diff = (targetDow - currentDow + 7) % 7;
+    if (isNextWeek) diff += 7;
+    return addDays(now, diff);
+  }
+
+  return null;
+}
+
+// 解析「上午/下午/晚上/凌晨 + X點(半)?」,回傳 {hour, minute} 或 null
+function parseTimeOfDay(text) {
+  const periodMatch = text.match(/(上午|中午|下午|晚上|凌晨|早上)/);
+  const timeMatch = text.match(/(\d{1,2})[點:](\d{1,2})?(半)?/);
+  if (!timeMatch) return null;
+
+  let hour = Number(timeMatch[1]);
+  const minute = timeMatch[3] ? 30 : timeMatch[2] ? Number(timeMatch[2]) : 0;
+
+  const period = periodMatch ? periodMatch[1] : null;
+  if (period === '下午' || period === '晚上') {
+    if (hour < 12) hour += 12;
+  } else if (period === '中午') {
+    if (hour < 12) hour += 12;
+  } else if (period === '凌晨') {
+    if (hour === 12) hour = 0;
+  }
+
+  if (hour > 23 || minute > 59) return null;
+  return { hour, minute };
+}
+
+// 把句子裡的時間詞挖掉,回傳剩下的內容(可能是空字串)
+function stripTimeWords(text) {
+  return text
+    .replace(/大後天|後天|明天|明日|今天|今日|今晚|今早/g, '')
+    .replace(/(下)?(?:禮拜|週|星期)[一二三四五六日天]/g, '')
+    .replace(/(上午|中午|下午|晚上|凌晨|早上)/g, '')
+    .replace(/\d{1,2}[點:]\d{0,2}半?/g, '')
+    .replace(/[,,、]/g, ' ')
+    .replace(/^要|^跟|^去/, '')
+    .trim();
+}
+
+// 從句子裡挖掉時間詞,剩下的當標題;整句都是時間詞時退回原句,避免標題空白
+function extractTitle(text) {
+  return (stripTimeWords(text) || text).slice(0, 100);
+}
+
+// 嘗試用規則解析出「新增行程」:日期詞跟時間詞都要偵測到,才有信心用規則直接解析
+function tryParseAddEvent(text, now) {
+  const dateOffset = parseDateOffset(text, now);
+  const time = parseTimeOfDay(text);
+  if (!dateOffset || !time) return null;
+
+  const start = new Date(taipeiDateToISO({ ...dateOffset, hour: time.hour, minute: time.minute })).toISOString();
+  const end = new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString();
+
+  return { intent: 'add_event', title: extractTitle(text), start, end };
+}
+
+// 嘗試用關鍵字判斷「查天氣 / 查行程」
+function tryParseQuery(text, now) {
+  if (WEATHER_KEYWORDS.test(text)) {
+    return { intent: 'query_weather' };
+  }
+
+  if (SCHEDULE_KEYWORDS.test(text)) {
+    const dateParts = parseDateOffset(text, now);
+    let dateOffset = 0;
+    if (dateParts) {
+      const nowUTC = Date.UTC(now.year, now.month - 1, now.day);
+      const targetUTC = Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day);
+      dateOffset = Math.round((targetUTC - nowUTC) / 86400000);
+    }
+
+    let period = 'all';
+    if (/上午|早上/.test(text)) period = 'morning';
+    else if (/下午/.test(text)) period = 'afternoon';
+    else if (/晚上/.test(text)) period = 'evening';
+
+    let specificTime = null;
+    if (/有沒有|有無|有嗎/.test(text)) {
+      const time = parseTimeOfDay(text);
+      if (time) {
+        const base = dateParts || now;
+        specificTime = new Date(taipeiDateToISO({ ...base, hour: time.hour, minute: time.minute })).toISOString();
+      }
+    }
+
+    return { intent: 'query_schedule', dateOffset, period, specificTime };
+  }
+
+  return null;
+}
+
+// ── 筆記 ──
+
+function tryParseNote(text) {
+  const complete = text.match(/^(?:完成|做完|搞定)\s*(?:筆記|第)?\s*(\d+)/);
+  if (complete) return { intent: 'complete_note', index: Number(complete[1]) };
+
+  const add = text.match(/^(?:記一下|記得|備忘|筆記|記錄一下|提醒我)\s*[::]?\s*(.+)/);
+  if (add && add[1].trim()) return { intent: 'add_note', content: add[1].trim().slice(0, 200) };
+
+  if (/有什麼要記|我的筆記|備忘錄|記了什麼|筆記清單|待辦清單|看筆記/.test(text)) {
+    return { intent: 'query_notes' };
+  }
+
+  return null;
+}
+
+// ── 記帳 ──
+
+// 月度比較要排在一般查詢前面(兩者都含「花多少」)
+function tryParseExpenseCompare(text) {
+  if (/比上(?:個)?月|跟上(?:個)?月|上月比較|比上個月/.test(text)) {
+    return { intent: 'query_expense_compare' };
+  }
+  return null;
+}
+
+// 從句子裡判斷要查哪個月份,回傳 'YYYY-MM';沒指定則回傳 null(代表本月)
+function parseTargetMonth(text, now) {
+  const pad = (n) => String(n).padStart(2, '0');
+
+  if (/上(?:個)?月/.test(text)) {
+    return now.month === 1 ? `${now.year - 1}-12` : `${now.year}-${pad(now.month - 1)}`;
+  }
+
+  const explicit = text.match(/(\d{1,2})\s*月/);
+  if (explicit) {
+    const m = Number(explicit[1]);
+    if (m >= 1 && m <= 12) {
+      // 指定的月份還沒到,視為去年的那個月(例如 8 月時問「12月花多少」)
+      const year = m > now.month ? now.year - 1 : now.year;
+      return `${year}-${pad(m)}`;
+    }
+  }
+
+  return null;
+}
+
+function tryParseExpenseQuery(text, now) {
+  if (/花了多少|花多少|支出|花費|記帳統計|開銷/.test(text) && !/^\s*(?:記帳|花費|支出)\s*\S+\s*\d+/.test(text)) {
+    return { intent: 'query_expense', yearMonth: parseTargetMonth(text, now) };
+  }
+  return null;
+}
+
+// 刪除/修正最後一筆記帳
+function tryParseExpenseFix(text) {
+  if (/^(?:刪掉|刪除|取消)\s*(?:剛剛|剛才|最後|上)(?:那|一)?筆/.test(text)) {
+    return { intent: 'delete_last_expense' };
+  }
+
+  const amend = text.match(/^(?:改成|改為|更正為|應該是)\s*(\d{1,7})\s*(?:元|塊)?$/);
+  if (amend) {
+    return { intent: 'update_last_expense', amount: Number(amend[1]) };
+  }
+
+  return null;
+}
+
+// 一次記多筆:「早餐50 午餐120 晚餐200」
+function tryParseMultiExpense(text) {
+  if (NOT_EXPENSE_HINTS.test(text)) return null;
+
+  const body = text.replace(/^(?:記帳|花費|支出)\s*[::]?\s*/, '');
+  const pairs = [...body.matchAll(/([^\s\d]{1,12}?)\s*(\d{1,7})\s*(?:元|塊)?(?=\s|$)/g)];
+  if (pairs.length < 2) return null;
+
+  // 確認整句幾乎都被這些「品項+金額」組合吃掉,避免把一般句子誤判成記帳
+  const consumed = pairs.reduce((n, p) => n + p[0].trim().length, 0);
+  if (consumed < body.replace(/\s/g, '').length * 0.8) return null;
+
+  const entries = pairs.map((p) => ({ item: p[1].trim().slice(0, 50), amount: Number(p[2]) }));
+  if (entries.some((e) => !e.item || !e.amount)) return null;
+
+  return { intent: 'add_expenses', entries };
+}
+
+// 明確寫法:「記帳 午餐 120」
+function tryParseExpenseExplicit(text) {
+  const m = text.match(/^(?:記帳|花費|支出)\s*[::]?\s*(.+?)\s*(\d{1,7})\s*(?:元|塊)?$/);
+  if (!m) return null;
+  return { intent: 'add_expense', item: m[1].trim().slice(0, 50), amount: Number(m[2]) };
+}
+
+// 簡短寫法:「午餐 120」— 放在最後判斷,並排除看起來像時間/行程的句子
+function tryParseExpenseImplicit(text) {
+  if (NOT_EXPENSE_HINTS.test(text)) return null;
+  const m = text.match(/^(.{1,12}?)\s*(\d{1,7})\s*(?:元|塊)?$/);
+  if (!m) return null;
+  const item = m[1].trim();
+  if (!item) return null;
+  return { intent: 'add_expense', item: item.slice(0, 50), amount: Number(m[2]) };
+}
+
+// ── 指令說明 ──
+
+function tryParseHelp(text) {
+  if (/^(指令|說明|help|幫助|功能|選單|你會什麼|能做什麼|使用說明)$/i.test(text)) {
+    return { intent: 'help' };
+  }
+  return null;
+}
+
+// ── 查空檔 ──
+
+function tryParseFreeSlots(text, now) {
+  if (!/有空|空檔|空堂|有沒有時間|哪天有空|哪個時段/.test(text)) return null;
+
+  let period = 'all';
+  if (/上午|早上/.test(text)) period = 'morning';
+  else if (/下午/.test(text)) period = 'afternoon';
+  else if (/晚上/.test(text)) period = 'evening';
+
+  // 「這週哪天有空」→ 查一整週;有指定某天則只查那天
+  const isWeek = /(這|本|下)(?:週|周|禮拜|星期)/.test(text) && !/(?:週|周|禮拜|星期)[一二三四五六日天]/.test(text);
+  if (isWeek) {
+    const isNextWeek = /^下|下(?:週|周|禮拜|星期)/.test(text);
+    return { intent: 'query_free_slots', dayOffset: isNextWeek ? 7 : 0, days: 7, period };
+  }
+
+  const dateParts = parseDateOffset(text, now);
+  let dayOffset = 0;
+  if (dateParts) {
+    const nowUTC = Date.UTC(now.year, now.month - 1, now.day);
+    const targetUTC = Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day);
+    dayOffset = Math.round((targetUTC - nowUTC) / 86400000);
+  }
+  return { intent: 'query_free_slots', dayOffset, days: 1, period };
+}
+
+// ── 改期 ──
+
+function tryParseReschedule(text, now) {
+  const m = text.match(/^(?:把|將)?(.+?)(?:改|延|挪|移)(?:期)?到(.+)$/);
+  if (!m) return null;
+
+  const sourceRaw = m[1].replace(/的?(行程|活動|會議|事情|安排)$/, '').trim();
+  const targetRaw = m[2].trim();
+  if (!sourceRaw || !targetRaw) return null;
+
+  // 目標時間:至少要有日期或時間其中之一,否則無法改期
+  const targetDate = parseDateOffset(targetRaw, now);
+  const targetTime = parseTimeOfDay(targetRaw);
+  if (!targetDate && !targetTime) return null;
+
+  // 來源:用日期或關鍵字定位要改哪一筆
+  const sourceDate = parseDateOffset(sourceRaw, now);
+  const sourceKeyword = stripTimeWords(sourceRaw);
+
+  let sourceDayOffset = null;
+  if (sourceDate) {
+    const nowUTC = Date.UTC(now.year, now.month - 1, now.day);
+    const targetUTC = Date.UTC(sourceDate.year, sourceDate.month - 1, sourceDate.day);
+    sourceDayOffset = Math.round((targetUTC - nowUTC) / 86400000);
+  }
+
+  let newDayOffset = null;
+  if (targetDate) {
+    const nowUTC = Date.UTC(now.year, now.month - 1, now.day);
+    const tUTC = Date.UTC(targetDate.year, targetDate.month - 1, targetDate.day);
+    newDayOffset = Math.round((tUTC - nowUTC) / 86400000);
+  }
+
+  return {
+    intent: 'reschedule_event',
+    sourceDayOffset,
+    sourceKeyword: sourceKeyword || null,
+    sourceTime: parseTimeOfDay(sourceRaw)
+      ? new Date(
+          taipeiDateToISO({
+            ...(sourceDate || now),
+            hour: parseTimeOfDay(sourceRaw).hour,
+            minute: parseTimeOfDay(sourceRaw).minute,
+          })
+        ).toISOString()
+      : null,
+    newDayOffset,
+    newHour: targetTime ? targetTime.hour : null,
+    newMinute: targetTime ? targetTime.minute : null,
+  };
+}
+
+// ── 循環行程 ──
+
+function tryParseRecurring(text, now) {
+  const time = parseTimeOfDay(text);
+  if (!time) return null;
+
+  const RRULE_WEEKDAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+
+  // 每週三 / 每禮拜三
+  const weekly = text.match(/每(?:週|周|禮拜|星期)([一二三四五六日天])/);
+  if (weekly) {
+    const dow = WEEKDAY_MAP[weekly[1]];
+    const nowDate = new Date(Date.UTC(now.year, now.month - 1, now.day));
+    const diff = (dow - nowDate.getUTCDay() + 7) % 7;
+    const first = addDays(now, diff);
+    return {
+      intent: 'add_recurring_event',
+      title: extractTitle(text.replace(/每(?:週|周|禮拜|星期)[一二三四五六日天]/g, '')),
+      firstStart: new Date(taipeiDateToISO({ ...first, hour: time.hour, minute: time.minute })).toISOString(),
+      recurrence: `RRULE:FREQ=WEEKLY;BYDAY=${RRULE_WEEKDAY[dow]}`,
+      description: `每週${weekly[1]}`,
+    };
+  }
+
+  // 每天
+  if (/每天|每日/.test(text)) {
+    return {
+      intent: 'add_recurring_event',
+      title: extractTitle(text.replace(/每天|每日/g, '')),
+      firstStart: new Date(taipeiDateToISO({ ...now, hour: time.hour, minute: time.minute })).toISOString(),
+      recurrence: 'RRULE:FREQ=DAILY',
+      description: '每天',
+    };
+  }
+
+  // 每月 X 號
+  const monthly = text.match(/每(?:個)?月\s*(\d{1,2})\s*號/);
+  if (monthly) {
+    const day = Number(monthly[1]);
+    if (day >= 1 && day <= 31) {
+      const first = day >= now.day ? { ...now, day } : addDays({ ...now, day: 1 }, 31);
+      return {
+        intent: 'add_recurring_event',
+        title: extractTitle(text.replace(/每(?:個)?月\s*\d{1,2}\s*號/g, '')),
+        firstStart: new Date(
+          taipeiDateToISO({ ...first, day, hour: time.hour, minute: time.minute })
+        ).toISOString(),
+        recurrence: `RRULE:FREQ=MONTHLY;BYMONTHDAY=${day}`,
+        description: `每月 ${day} 號`,
+      };
+    }
+  }
+
+  return null;
+}
+
+// ── 行程:刪除 / 搜尋 / 整週 / 今日總覽 ──
+
+function tryParseDeleteEvent(text, now) {
+  const m = text.match(/^(?:取消|刪除|刪掉|移除)\s*(?:掉)?\s*(.+)/);
+  if (!m) return null;
+
+  const body = m[1].replace(/的?(行程|活動|會議|事情|安排)$/, '').trim();
+  if (!body) return null;
+
+  // 若句子裡帶有日期(例如「取消明天下午3點的會議」),用日期定位比關鍵字搜尋準確
+  const dateParts = parseDateOffset(body, now);
+  const time = parseTimeOfDay(body);
+  const keyword = stripTimeWords(body); // 刪除情境允許為空(代表只用日期/時間定位)
+
+  if (dateParts) {
+    const nowUTC = Date.UTC(now.year, now.month - 1, now.day);
+    const targetUTC = Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day);
+    return {
+      intent: 'delete_event',
+      dateOffset: Math.round((targetUTC - nowUTC) / 86400000),
+      targetTime: time
+        ? new Date(taipeiDateToISO({ ...dateParts, hour: time.hour, minute: time.minute })).toISOString()
+        : null,
+      keyword: keyword || null,
+    };
+  }
+
+  return { intent: 'delete_event', dateOffset: null, targetTime: null, keyword: body.slice(0, 50) };
+}
+
+function tryParseSearchEvent(text) {
+  const whenMatch = text.match(/^(.+?)\s*(?:是)?(?:什麼時候|何時|在哪天)/);
+  if (whenMatch && whenMatch[1].trim()) {
+    return { intent: 'search_event', keyword: whenMatch[1].trim().slice(0, 50) };
+  }
+
+  const findMatch = text.match(/^(?:找|搜尋|查詢)\s*[::]?\s*(.+)/);
+  if (findMatch && findMatch[1].trim()) {
+    const keyword = findMatch[1].replace(/的?(行程|活動|紀錄)$/, '').trim();
+    if (keyword) return { intent: 'search_event', keyword: keyword.slice(0, 50) };
+  }
+
+  return null;
+}
+
+function tryParseOverview(text) {
+  if (/今天狀況|今日總覽|今天總覽|今日概況|今天如何|今天怎樣|今日狀況|總覽/.test(text)) {
+    return { intent: 'query_overview' };
+  }
+  return null;
+}
+
+function tryParseWeek(text) {
+  if (/(這|本|下)(?:週|周|禮拜|星期)/.test(text) && /行程|安排|事情|待辦|有什麼/.test(text)) {
+    // 「下週」從 7 天後起算,「這週」從今天起算
+    const isNextWeek = /^下|下(?:週|周|禮拜|星期)/.test(text);
+    return { intent: 'query_week', dayOffset: isNextWeek ? 7 : 0, days: 7 };
+  }
+  return null;
+}
+
+// 主入口:回傳解析結果物件,或 null(代表規則判斷不出來,交給 Claude fallback)
+// 順序由「明確」到「模糊」,避免短句被前面的規則誤判
+function parseWithRules(text) {
+  const now = getTaipeiNow();
+  const trimmed = text.trim();
+
+  return (
+    tryParseHelp(trimmed) ||
+    tryParseNote(trimmed) ||
+    tryParseExpenseFix(trimmed) ||
+    tryParseExpenseCompare(trimmed) ||
+    tryParseExpenseQuery(trimmed, now) ||
+    tryParseExpenseExplicit(trimmed) ||
+    tryParseFreeSlots(trimmed, now) ||
+    tryParseReschedule(trimmed, now) ||
+    tryParseDeleteEvent(trimmed, now) ||
+    tryParseOverview(trimmed) ||
+    tryParseWeek(trimmed) ||
+    tryParseQuery(trimmed, now) ||
+    tryParseRecurring(trimmed, now) ||
+    tryParseSearchEvent(trimmed) ||
+    tryParseAddEvent(trimmed, now) ||
+    tryParseMultiExpense(trimmed) ||
+    tryParseExpenseImplicit(trimmed)
+  );
+}
+
+module.exports = { parseWithRules };
