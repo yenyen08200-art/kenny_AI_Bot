@@ -153,6 +153,26 @@ async function updateLastExpenseAmount(auth, newAmount) {
   return { item, oldAmount: Number(oldAmount) || 0, newAmount };
 }
 
+// 依關鍵字搜尋記帳紀錄(不限本月,搜尋全部歷史)
+async function searchExpenses(auth, keyword) {
+  const rows = await readRows(auth, EXPENSE_SHEET);
+  return rows
+    .map((r) => ({ date: r[0], item: r[2], amount: Number(r[3]) || 0 }))
+    .filter((e) => e.item && e.item.includes(keyword));
+}
+
+// 過去 7 天(含今天)的支出統計,週間回顧用
+async function getWeeklyExpenseSummary(auth) {
+  const rows = await readRows(auth, EXPENSE_SHEET);
+  const cutoff = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(
+    new Date(Date.now() - 7 * 86400000)
+  );
+
+  const matched = rows.filter((r) => (r[0] || '') >= cutoff);
+  const total = matched.reduce((sum, r) => sum + (Number(r[3]) || 0), 0);
+  return { total, count: matched.length };
+}
+
 // 本月 vs 上月支出比較
 async function compareMonthlyExpense(auth) {
   const { yearMonth } = taipeiNowParts();
@@ -184,33 +204,70 @@ async function getPendingNotes(auth) {
     .filter((n) => n.content && n.status !== '已完成');
 }
 
-// 把第 n 則未完成筆記標記為已完成(n 從 1 開始,對應 getPendingNotes 的顯示順序)
-async function completeNote(auth, displayIndex) {
+// 把指定的未完成筆記標記為已完成。displayIndices 是陣列(n 從 1 開始,
+// 對應 getPendingNotes 的顯示順序),一次可以完成多則。
+async function completeNotes(auth, displayIndices) {
   const pending = await getPendingNotes(auth);
-  const target = pending[displayIndex - 1];
-  if (!target) return null;
+  const targets = displayIndices.map((i) => pending[i - 1]).filter(Boolean);
+  if (!targets.length) return [];
 
   const sheets = google.sheets({ version: 'v4', auth });
-  await sheets.spreadsheets.values.update({
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: getSpreadsheetId(),
-    range: `${NOTE_SHEET}!D${target.rowIndex}`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [['已完成']] },
+    requestBody: {
+      valueInputOption: 'USER_ENTERED',
+      data: targets.map((t) => ({ range: `${NOTE_SHEET}!D${t.rowIndex}`, values: [['已完成']] })),
+    },
   });
 
-  return target;
+  return targets;
+}
+
+// 整筆刪除筆記(不是標記完成,是真的從表格移除),同樣支援一次刪多則
+async function deleteNotes(auth, displayIndices) {
+  const pending = await getPendingNotes(auth);
+  const targets = displayIndices.map((i) => pending[i - 1]).filter(Boolean);
+  if (!targets.length) return [];
+
+  const sheets = google.sheets({ version: 'v4', auth });
+  const sheetId = await getSheetId(auth, NOTE_SHEET);
+
+  // 由大到小刪除,避免同一批次裡刪掉前面的列導致後面的列位移錯位
+  const sortedDesc = [...targets].sort((a, b) => b.rowIndex - a.rowIndex);
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: getSpreadsheetId(),
+    requestBody: {
+      requests: sortedDesc.map((t) => ({
+        deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: t.rowIndex - 1, endIndex: t.rowIndex } },
+      })),
+    },
+  });
+
+  return targets;
+}
+
+// 依關鍵字搜尋筆記(不限未完成,含已完成的歷史紀錄)
+async function searchNotes(auth, keyword) {
+  const rows = await readRows(auth, NOTE_SHEET);
+  return rows
+    .map((r, idx) => ({ rowIndex: idx + 2, date: r[0], content: r[2], status: r[3] }))
+    .filter((n) => n.content && n.content.includes(keyword));
 }
 
 module.exports = {
   addExpense,
   addExpenses,
   getMonthlyExpense,
+  getWeeklyExpenseSummary,
   compareMonthlyExpense,
   deleteLastExpense,
   updateLastExpenseAmount,
+  searchExpenses,
   addNote,
   getPendingNotes,
-  completeNote,
+  completeNotes,
+  deleteNotes,
+  searchNotes,
   EXPENSE_SHEET,
   NOTE_SHEET,
   SETUP_HINT,

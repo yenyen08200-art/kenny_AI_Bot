@@ -17,7 +17,10 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "query_expense": 在問這個月花了多少錢
 - "add_note": 想記一則不綁時間的筆記/備忘
 - "query_notes": 想看目前的待辦筆記
-- "complete_note": 想把第幾則筆記標記為完成
+- "complete_note": 想把某幾則筆記標記為完成
+- "delete_note": 想整筆刪除某幾則筆記(不是標記完成)
+- "search_note": 想搜尋筆記(例如「找筆記 隨身碟」)
+- "search_expense": 想搜尋記帳歷史(例如「找記帳 隨身碟」)
 - "chitchat": 以上皆非(閒聊、問候,或訊息不足以判斷)
 
 輸出格式(只填該意圖需要的欄位,其餘省略):
@@ -26,7 +29,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "title": "add_event:行程標題,簡潔、去除時間詞",
   "startTime": "add_event:ISO 8601 時間字串,含時區",
   "endTime": "add_event:ISO 8601 時間字串",
-  "keyword": "delete_event / search_event:要比對的行程關鍵字",
+  "keyword": "delete_event / search_event / search_note / search_expense:要比對的關鍵字",
   "dateOffset": "query_schedule / delete_event:整數,0=今天,1=明天,以此類推",
   "period": "query_schedule:all / morning / afternoon / evening",
   "specificTime": "query_schedule 問特定時間點時:ISO 8601 時間字串,否則 null",
@@ -35,7 +38,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "item": "add_expense:支出品項",
   "amount": "add_expense:金額,純數字",
   "content": "add_note:筆記內容",
-  "index": "complete_note:第幾則,整數",
+  "indices": "complete_note / delete_note:第幾則的整數陣列,例如 [1] 或 [1,2]",
   "reason": "chitchat:簡短說明為什麼判斷成閒聊"
 }
 
@@ -179,12 +182,19 @@ async function parseWithClaude(text) {
     return { intent: 'add_note', content: String(parsed.content).slice(0, 200) };
   }
 
-  if (parsed.intent === 'complete_note') {
-    const index = Number(parsed.index);
-    if (!Number.isInteger(index) || index < 1) {
-      return { intent: 'chitchat', reason: '沒有指明要完成第幾則筆記' };
+  if (parsed.intent === 'complete_note' || parsed.intent === 'delete_note') {
+    const indices = Array.isArray(parsed.indices)
+      ? parsed.indices.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+      : [];
+    if (!indices.length) {
+      return { intent: 'chitchat', reason: '沒有指明要處理第幾則筆記' };
     }
-    return { intent: 'complete_note', index };
+    return { intent: parsed.intent, indices };
+  }
+
+  if (parsed.intent === 'search_note' || parsed.intent === 'search_expense') {
+    if (!parsed.keyword) return { intent: 'chitchat', reason: '沒有指明要搜尋什麼' };
+    return { intent: parsed.intent, keyword: String(parsed.keyword).slice(0, 50) };
   }
 
   return { intent: 'chitchat', reason: parsed.reason || '無法辨識意圖' };

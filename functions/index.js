@@ -64,6 +64,15 @@ const BRIEFING_SECRETS = [
   GOOGLE_TOKEN_JSON,
 ];
 
+// 週間回顧不需要任何 AI,純資料彙整(記帳+筆記+下週行程)
+const WEEKLY_SECRETS = [
+  LINE_CHANNEL_ACCESS_TOKEN,
+  LINE_USER_ID,
+  GOOGLE_CREDENTIALS_JSON,
+  GOOGLE_TOKEN_JSON,
+  GOOGLE_SHEETS_ID,
+];
+
 const REGION = 'asia-east1'; // 台灣機房,延遲較低
 
 // ── 共用格式化 / 篩選工具 ──
@@ -571,6 +580,7 @@ const HELP_SECTIONS = [
       { left: '統計', right: '這個月花多少' },
       { left: '查月份', right: '上個月花多少 / 7月花多少' },
       { left: '比較', right: '這個月比上個月多花多少' },
+      { left: '搜尋', right: '找記帳 隨身碟' },
     ],
   },
   {
@@ -578,7 +588,9 @@ const HELP_SECTIONS = [
     rows: [
       { left: '記下', right: '記一下要買隨身碟' },
       { left: '查看', right: '我的筆記' },
-      { left: '完成', right: '完成 1' },
+      { left: '完成', right: '完成 1 / 完成 1,2' },
+      { left: '刪除', right: '刪除筆記 1' },
+      { left: '搜尋', right: '找筆記 隨身碟' },
     ],
   },
   {
@@ -617,19 +629,62 @@ async function handleQueryNotes(event, client) {
 
   const lines = [`📝 待辦筆記(${notes.length} 則)`];
   notes.forEach((n, i) => lines.push(`${i + 1}. ${n.content}`));
-  lines.push('', '完成後可以傳「完成 1」把它劃掉');
+  lines.push('', '完成傳「完成 1」、刪除傳「刪除筆記 1」,也可以一次多個「完成 1,2」');
 
   return reply(client, event, lines.join('\n'));
 }
 
 async function handleCompleteNote(event, client, parsed) {
   const auth = authorize();
-  const done = await sheetsService.completeNote(auth, parsed.index);
+  const done = await sheetsService.completeNotes(auth, parsed.indices);
 
-  if (!done) {
-    return reply(client, event, `🤔 找不到第 ${parsed.index} 則筆記,可以先傳「我的筆記」看看清單`);
+  if (!done.length) {
+    return reply(client, event, `🤔 找不到指定的筆記,可以先傳「我的筆記」看看清單`);
   }
-  return reply(client, event, `✅ 已完成\n${done.content}`);
+  return reply(client, event, `✅ 已完成 ${done.length} 則\n${done.map((n) => `・${n.content}`).join('\n')}`);
+}
+
+async function handleDeleteNote(event, client, parsed) {
+  const auth = authorize();
+  const removed = await sheetsService.deleteNotes(auth, parsed.indices);
+
+  if (!removed.length) {
+    return reply(client, event, `🤔 找不到指定的筆記,可以先傳「我的筆記」看看清單`);
+  }
+  return reply(client, event, `🗑 已刪除 ${removed.length} 則\n${removed.map((n) => `・${n.content}`).join('\n')}`);
+}
+
+async function handleSearchNote(event, client, parsed) {
+  const auth = authorize();
+  const found = await sheetsService.searchNotes(auth, parsed.keyword);
+
+  const card = buildListCard({
+    title: `🔍 搜尋筆記:${parsed.keyword}`,
+    subtitle: found.length ? `找到 ${found.length} 則` : '搜尋範圍:全部筆記',
+    sections: found.length
+      ? [{ rows: found.slice(0, 12).map((n) => ({ left: n.date, right: `${n.content}${n.status === '已完成' ? '(已完成)' : ''}` })) }]
+      : [{ rows: [], emptyText: `找不到跟「${parsed.keyword}」有關的筆記` }],
+    footerText: found.length > 12 ? `還有 ${found.length - 12} 則未顯示` : null,
+  });
+
+  return replyCard(client, event, card);
+}
+
+async function handleSearchExpense(event, client, parsed) {
+  const auth = authorize();
+  const found = await sheetsService.searchExpenses(auth, parsed.keyword);
+  const total = found.reduce((s, e) => s + e.amount, 0);
+
+  const card = buildListCard({
+    title: `🔍 搜尋記帳:${parsed.keyword}`,
+    subtitle: found.length ? `找到 ${found.length} 筆・共 $${total.toLocaleString()}` : '搜尋範圍:全部紀錄',
+    sections: found.length
+      ? [{ rows: found.slice(0, 15).map((e) => ({ left: e.date, right: `${e.item} $${e.amount}` })) }]
+      : [{ rows: [], emptyText: `找不到跟「${parsed.keyword}」有關的記帳紀錄` }],
+    footerText: found.length > 15 ? `還有 ${found.length - 15} 筆未顯示` : null,
+  });
+
+  return replyCard(client, event, card);
 }
 
 async function handleTextMessage(event, client) {
@@ -676,6 +731,9 @@ async function handleTextMessage(event, client) {
     add_note: handleAddNote,
     query_notes: handleQueryNotes,
     complete_note: handleCompleteNote,
+    delete_note: handleDeleteNote,
+    search_note: handleSearchNote,
+    search_expense: handleSearchExpense,
   };
 
   const handler = HANDLERS[parsed.intent];
@@ -736,5 +794,42 @@ exports.dailyBriefing = onSchedule(
 
     await pushMessage(flexMessage);
     logger.info('已推播 Flex Message 至 LINE');
+  }
+);
+
+// ── ③ 排程:每週五 18:00 週間回顧(本週支出、待辦、下週行程,不呼叫任何 AI)──
+exports.weeklyReview = onSchedule(
+  { schedule: '0 18 * * 5', timeZone: 'Asia/Taipei', secrets: WEEKLY_SECRETS, region: REGION },
+  async () => {
+    logger.info('開始產生週間回顧...');
+
+    const auth = authorize();
+    const [expenseSummary, pendingNotes, nextWeekEvents] = await Promise.all([
+      sheetsService.getWeeklyExpenseSummary(auth),
+      sheetsService.getPendingNotes(auth),
+      getEventsForRange(auth, 7, 7),
+    ]);
+
+    const card = buildListCard({
+      title: '📊 週間回顧',
+      subtitle: '過去 7 天摘要',
+      hero: { value: `$${expenseSummary.total.toLocaleString()}`, label: `本週支出・${expenseSummary.count} 筆` },
+      sections: [
+        {
+          heading: '📝 待辦筆記',
+          rows: pendingNotes.length ? [{ left: `${pendingNotes.length} 則尚未完成` }] : [],
+          emptyText: '目前沒有待辦,很清爽！',
+        },
+        {
+          heading: '📅 下週行程',
+          rows: nextWeekEvents.map((e) => ({ left: formatDateShort(e.start), right: e.summary })),
+          emptyText: '下週目前還沒有安排行程',
+        },
+      ],
+      footerText: '祝你有美好的一週！',
+    });
+
+    await pushMessage(card);
+    logger.info('已推播週間回顧');
   }
 );

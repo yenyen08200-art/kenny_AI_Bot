@@ -9,6 +9,14 @@ const SCHEDULE_KEYWORDS = /行程|事情|安排|有沒有事|待辦|有什麼事
 // 「品項 金額」這種簡短記帳寫法,遇到下列字詞就不當成記帳(避免把時間、行程誤判成金額)
 const NOT_EXPENSE_HINTS = /[點時:︰]|行程|天氣|明天|今天|後天|大後天|禮拜|星期|週|號|度|%|會議|提醒/;
 
+// 把「1,2,3」「1 2 3」「1、2、3」這類字串轉成整數陣列
+function parseIndexList(raw) {
+  return raw
+    .split(/[,、\s]+/)
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
 function getTaipeiNow() {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Taipei',
@@ -144,8 +152,26 @@ function tryParseQuery(text, now) {
 // ── 筆記 ──
 
 function tryParseNote(text) {
-  const complete = text.match(/^(?:完成|做完|搞定)\s*(?:筆記|第)?\s*(\d+)/);
-  if (complete) return { intent: 'complete_note', index: Number(complete[1]) };
+  // 刪除/完成要放在「新增筆記」之前判斷,不然會被 add 規則的寬鬆比對搶走
+  // 支援兩種語序:「刪除第1則筆記」(數字在前)跟「刪除筆記 1」(數字在後)
+  const deleteNote =
+    text.match(/^(?:刪除|刪掉|移除)\s*(?:第)?\s*([\d,、\s]+)\s*則?\s*筆記/) ||
+    text.match(/^(?:刪除|刪掉|移除)\s*筆記\s*(?:第)?\s*([\d,、\s]+)\s*則?/);
+  if (deleteNote) {
+    const indices = parseIndexList(deleteNote[1]);
+    if (indices.length) return { intent: 'delete_note', indices };
+  }
+
+  const complete = text.match(/^(?:完成|做完|搞定)\s*(?:筆記|第)?\s*([\d,、\s]+)\s*則?/);
+  if (complete) {
+    const indices = parseIndexList(complete[1]);
+    if (indices.length) return { intent: 'complete_note', indices };
+  }
+
+  const searchNote = text.match(/^(?:找|搜尋|查詢)筆記\s*[::]?\s*(.+)/) || text.match(/^筆記(?:找|搜尋|查詢)\s*[::]?\s*(.+)/);
+  if (searchNote && searchNote[1].trim()) {
+    return { intent: 'search_note', keyword: searchNote[1].trim().slice(0, 50) };
+  }
 
   const add = text.match(/^(?:記一下|記得|備忘|筆記|記錄一下|提醒我)\s*[::]?\s*(.+)/);
   if (add && add[1].trim()) return { intent: 'add_note', content: add[1].trim().slice(0, 200) };
@@ -192,6 +218,13 @@ function tryParseExpenseQuery(text, now) {
   if (/花了多少|花多少|支出|花費|記帳統計|開銷/.test(text) && !/^\s*(?:記帳|花費|支出)\s*\S+\s*\d+/.test(text)) {
     return { intent: 'query_expense', yearMonth: parseTargetMonth(text, now) };
   }
+  return null;
+}
+
+// 搜尋記帳歷史(要放在 tryParseExpenseQuery 前面判斷,避免被「花多少」搶走)
+function tryParseExpenseSearch(text) {
+  const m = text.match(/^(?:找|搜尋|查詢)記帳\s*[::]?\s*(.+)/) || text.match(/^記帳(?:找|搜尋|查詢)\s*[::]?\s*(.+)/);
+  if (m && m[1].trim()) return { intent: 'search_expense', keyword: m[1].trim().slice(0, 50) };
   return null;
 }
 
@@ -459,6 +492,7 @@ function parseWithRules(text) {
     tryParseHelp(trimmed) ||
     tryParseNote(trimmed) ||
     tryParseExpenseFix(trimmed) ||
+    tryParseExpenseSearch(trimmed) ||
     tryParseExpenseCompare(trimmed) ||
     tryParseExpenseQuery(trimmed, now) ||
     tryParseExpenseExplicit(trimmed) ||
