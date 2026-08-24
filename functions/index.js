@@ -141,27 +141,15 @@ function formatDateShort(iso) {
   });
 }
 
-// 回覆訊息下方的快捷按鈕(點一下就送出對應指令,不用打字)
-const QUICK_REPLY_ITEMS = [
-  { label: '今天狀況', text: '今天狀況' },
-  { label: '這週行程', text: '這週行程' },
-  { label: '這週空檔', text: '這週哪天有空' },
-  { label: '我的筆記', text: '我的筆記' },
-  { label: '本月支出', text: '這個月花多少' },
-  { label: '指令', text: '指令' },
-].map((i) => ({ type: 'action', action: { type: 'message', label: i.label, text: i.text } }));
+// 常用指令改由「圖文選單」(rich menu,見 setup-richmenu.js)常駐提供,不再用 Quick Reply
 
 function reply(client, event, text) {
-  return client.replyMessage(event.replyToken, {
-    type: 'text',
-    text,
-    quickReply: { items: QUICK_REPLY_ITEMS },
-  });
+  return client.replyMessage(event.replyToken, { type: 'text', text });
 }
 
-// 卡片回覆(清單類資訊用),同樣掛上快捷按鈕
+// 卡片回覆(清單類資訊用)
 function replyCard(client, event, card) {
-  return client.replyMessage(event.replyToken, { ...card, quickReply: { items: QUICK_REPLY_ITEMS } });
+  return client.replyMessage(event.replyToken, card);
 }
 
 // 把行程清單依日期分組,回傳 buildListCard 需要的 sections
