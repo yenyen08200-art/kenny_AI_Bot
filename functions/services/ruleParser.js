@@ -48,6 +48,8 @@ function parseDateOffset(text, now) {
   if (/後天/.test(text)) return addDays(now, 2);
   if (/明天|明日/.test(text)) return addDays(now, 1);
   if (/今天|今日|今晚|今早/.test(text)) return addDays(now, 0);
+  if (/前天/.test(text)) return addDays(now, -2);
+  if (/昨天|昨日/.test(text)) return addDays(now, -1);
 
   const weekdayMatch = text.match(/(下)?(?:禮拜|週|星期)([一二三四五六日天])/);
   if (weekdayMatch) {
@@ -218,6 +220,55 @@ function tryParseExpenseQuery(text, now) {
   if (/花了多少|花多少|支出|花費|記帳統計|開銷/.test(text) && !/^\s*(?:記帳|花費|支出)\s*\S+\s*\d+/.test(text)) {
     return { intent: 'query_expense', yearMonth: parseTargetMonth(text, now) };
   }
+  return null;
+}
+
+// 算出「m/d 這個日期」對應的西元年(還沒到就當去年),回傳 'YYYY-MM-DD'
+function resolveYearForDate(month, day, now) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const todayStr = `${now.year}-${pad(now.month)}-${pad(now.day)}`;
+  let dateStr = `${now.year}-${pad(month)}-${pad(day)}`;
+  if (dateStr > todayStr) dateStr = `${now.year - 1}-${pad(month)}-${pad(day)}`;
+  return dateStr;
+}
+
+// 單日/區間記帳查詢:「今天花多少」「昨天花多少」「8月20日花多少」「8/1到8/15花多少」
+// 要放在 tryParseExpenseQuery 前面判斷,不然「8月20日花多少」裡的「8月」會先被當成整月查詢搶走
+function tryParseExpenseDateQuery(text, now) {
+  if (!/花了多少|花多少|花費|消費|支出/.test(text)) return null;
+
+  // 區間:「8/1到8/15」「8月1號到8月15號」「8/1~8/15」
+  const range = text.match(/(\d{1,2})[\/月]\s*(\d{1,2})\s*[日號]?\s*(?:到|至|[~-])\s*(\d{1,2})[\/月]\s*(\d{1,2})\s*[日號]?/);
+  if (range) {
+    const [m1, d1, m2, d2] = range.slice(1).map(Number);
+    if (m1 >= 1 && m1 <= 12 && m2 >= 1 && m2 <= 12 && d1 >= 1 && d1 <= 31 && d2 >= 1 && d2 <= 31) {
+      const startDate = resolveYearForDate(m1, d1, now);
+      const startYear = Number(startDate.slice(0, 4));
+      const endYearBumped = m2 < m1 || (m2 === m1 && d2 < d1) ? startYear + 1 : startYear;
+      const pad = (n) => String(n).padStart(2, '0');
+      const endDate = `${endYearBumped}-${pad(m2)}-${pad(d2)}`;
+      return { intent: 'query_expense_range', startDate, endDate, label: `${m1}/${d1} - ${m2}/${d2}` };
+    }
+  }
+
+  // 相對日期:今天/昨天/前天/明天...
+  const dateParts = parseDateOffset(text, now);
+  if (dateParts) {
+    const pad = (n) => String(n).padStart(2, '0');
+    const dateStr = `${dateParts.year}-${pad(dateParts.month)}-${pad(dateParts.day)}`;
+    return { intent: 'query_expense_range', startDate: dateStr, endDate: dateStr, label: dateStr };
+  }
+
+  // 特定單一日期:「8月20日花多少」「8/20花多少」
+  const single = text.match(/(\d{1,2})[\/月]\s*(\d{1,2})\s*[日號]?/);
+  if (single) {
+    const [m, d] = single.slice(1).map(Number);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      const dateStr = resolveYearForDate(m, d, now);
+      return { intent: 'query_expense_range', startDate: dateStr, endDate: dateStr, label: dateStr };
+    }
+  }
+
   return null;
 }
 
@@ -555,6 +606,7 @@ function parseWithRules(text) {
     tryParseSetBudget(trimmed) ||
     tryParseAllocation(trimmed) ||
     tryParseExpenseCompare(trimmed) ||
+    tryParseExpenseDateQuery(trimmed, now) ||
     tryParseExpenseQuery(trimmed, now) ||
     tryParseExpenseExplicit(trimmed) ||
     tryParseFreeSlots(trimmed, now) ||

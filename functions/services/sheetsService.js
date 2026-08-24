@@ -196,6 +196,16 @@ async function updateLastExpenseAmount(auth, newAmount) {
   return { item, oldAmount: Number(oldAmount) || 0, newAmount };
 }
 
+// 查某個日期區間(含頭尾)的支出,startDate/endDate 皆為 'YYYY-MM-DD'
+async function getExpensesByDateRange(auth, startDate, endDate) {
+  const rows = await readRows(auth, EXPENSE_SHEET);
+  const items = rows
+    .filter((r) => (r[0] || '') >= startDate && (r[0] || '') <= endDate)
+    .map((r) => ({ date: r[0], item: r[2], amount: Number(r[3]) || 0 }));
+  const total = items.reduce((s, e) => s + e.amount, 0);
+  return { total, count: items.length, items };
+}
+
 // 依關鍵字搜尋記帳紀錄(不限本月,搜尋全部歷史)
 async function searchExpenses(auth, keyword) {
   const rows = await readRows(auth, EXPENSE_SHEET);
@@ -355,6 +365,7 @@ module.exports = {
   addExpenses,
   getMonthlyExpense,
   getMonthlyExpenseByCategory,
+  getExpensesByDateRange,
   getWeeklyExpenseSummary,
   compareMonthlyExpense,
   getBudgets,

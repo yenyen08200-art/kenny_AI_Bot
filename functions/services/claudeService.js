@@ -14,7 +14,8 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "query_free_slots": 在問哪些時段有空(例如「這週哪天有空」)
 - "help": 想知道這個機器人能做什麼
 - "add_expense": 想記一筆支出(有品項與金額)
-- "query_expense": 在問這個月花了多少錢
+- "query_expense": 在問這個月/上個月/某月花了多少錢
+- "query_expense_range": 在問某一天或某個日期區間花了多少錢(例如「今天花多少」「8/1到8/15花多少」)
 - "query_budget": 在問還剩多少預算/錢可以花
 - "set_budget": 想設定/修改某個分類的月預算(例如「設定預算 房租 3000」)
 - "query_savings": 在問這個月存了多少錢
@@ -42,6 +43,8 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "item": "add_expense:支出品項,如果使用者有額外備註/說明,用「品項・備註」的格式合併成一個字串",
   "amount": "add_expense / set_budget:金額,純數字",
   "categoryText": "set_budget:分類文字(不用是精確分類名稱,系統會自動正規化)",
+  "startDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD",
+  "endDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD,單日查詢就跟 startDate 相同",
   "expenses": "add_allocation:支出項目陣列,每個是 {item, amount}",
   "savings": "add_allocation:存款項目陣列,每個是 {item, amount}",
   "content": "add_note:筆記內容",
@@ -206,6 +209,16 @@ async function parseWithClaude(text) {
 
   if (parsed.intent === 'query_savings') {
     return { intent: 'query_savings' };
+  }
+
+  if (parsed.intent === 'query_expense_range') {
+    const isValidDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+    if (!isValidDate(parsed.startDate)) {
+      return { intent: 'chitchat', reason: '沒有辨識出明確的日期' };
+    }
+    const startDate = parsed.startDate;
+    const endDate = isValidDate(parsed.endDate) ? parsed.endDate : startDate;
+    return { intent: 'query_expense_range', startDate, endDate, label: startDate === endDate ? startDate : `${startDate} ~ ${endDate}` };
   }
 
   if (parsed.intent === 'set_budget') {

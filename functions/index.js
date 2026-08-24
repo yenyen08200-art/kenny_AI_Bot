@@ -591,6 +591,30 @@ async function handleBudgetStatus(event, client) {
   return replyCard(client, event, card);
 }
 
+// ── 單日/區間記帳查詢 ──
+async function handleExpenseRangeQuery(event, client, parsed) {
+  const auth = authorize();
+  const { total, count, items } = await sheetsService.getExpensesByDateRange(auth, parsed.startDate, parsed.endDate);
+
+  if (!count) {
+    return reply(client, event, `💰 ${parsed.label} 沒有任何記帳紀錄`);
+  }
+
+  const card = buildListCard({
+    title: `💰 ${parsed.label} 支出`,
+    subtitle: `${count} 筆紀錄`,
+    hero: { value: `$${total.toLocaleString()}`, label: `總支出・${count} 筆` },
+    sections: [
+      {
+        rows: items.slice(0, 15).map((e) => ({ left: formatDateShort(e.date), right: `${e.item} $${e.amount}` })),
+      },
+    ],
+    footerText: items.length > 15 ? `還有 ${items.length - 15} 筆未顯示` : null,
+  });
+
+  return replyCard(client, event, card);
+}
+
 // ── 本月 vs 上月比較 ──
 async function handleExpenseCompare(event, client) {
   const auth = authorize();
@@ -641,6 +665,8 @@ const HELP_SECTIONS = [
       { left: '改金額', right: '改成 150' },
       { left: '統計', right: '這個月花多少(含分類佔比)' },
       { left: '查月份', right: '上個月花多少 / 7月花多少' },
+      { left: '查單日', right: '今天花多少 / 昨天花多少 / 8月20日花多少' },
+      { left: '查區間', right: '8/1到8/15花多少' },
       { left: '比較', right: '這個月比上個月多花多少' },
       { left: '搜尋', right: '找記帳 隨身碟' },
       { left: '設定預算', right: '設定預算 房租 3000' },
@@ -728,7 +754,7 @@ async function handleSearchNote(event, client, parsed) {
     title: `🔍 搜尋筆記:${parsed.keyword}`,
     subtitle: found.length ? `找到 ${found.length} 則` : '搜尋範圍:全部筆記',
     sections: found.length
-      ? [{ rows: found.slice(0, 12).map((n) => ({ left: n.date, right: `${n.content}${n.status === '已完成' ? '(已完成)' : ''}` })) }]
+      ? [{ rows: found.slice(0, 12).map((n) => ({ left: formatDateShort(n.date), right: `${n.content}${n.status === '已完成' ? '(已完成)' : ''}` })) }]
       : [{ rows: [], emptyText: `找不到跟「${parsed.keyword}」有關的筆記` }],
     footerText: found.length > 12 ? `還有 ${found.length - 12} 則未顯示` : null,
   });
@@ -745,7 +771,7 @@ async function handleSearchExpense(event, client, parsed) {
     title: `🔍 搜尋記帳:${parsed.keyword}`,
     subtitle: found.length ? `找到 ${found.length} 筆・共 $${total.toLocaleString()}` : '搜尋範圍:全部紀錄',
     sections: found.length
-      ? [{ rows: found.slice(0, 15).map((e) => ({ left: e.date, right: `${e.item} $${e.amount}` })) }]
+      ? [{ rows: found.slice(0, 15).map((e) => ({ left: formatDateShort(e.date), right: `${e.item} $${e.amount}` })) }]
       : [{ rows: [], emptyText: `找不到跟「${parsed.keyword}」有關的記帳紀錄` }],
     footerText: found.length > 15 ? `還有 ${found.length - 15} 筆未顯示` : null,
   });
@@ -849,6 +875,7 @@ async function handleTextMessage(event, client) {
     delete_last_expense: handleDeleteLastExpense,
     update_last_expense: handleUpdateLastExpense,
     query_expense: handleExpenseQuery,
+    query_expense_range: handleExpenseRangeQuery,
     query_expense_compare: handleExpenseCompare,
     query_budget: handleBudgetStatus,
     set_budget: handleSetBudget,
