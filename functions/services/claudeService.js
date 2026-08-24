@@ -15,6 +15,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "help": 想知道這個機器人能做什麼
 - "add_expense": 想記一筆支出(有品項與金額)
 - "query_expense": 在問這個月花了多少錢
+- "query_budget": 在問還剩多少預算/錢可以花
 - "add_note": 想記一則不綁時間的筆記/備忘
 - "query_notes": 想看目前的待辦筆記
 - "complete_note": 想把某幾則筆記標記為完成
@@ -114,7 +115,7 @@ async function parseWithClaude(text) {
     };
   }
 
-  if (['query_weather', 'query_overview', 'query_expense', 'help'].includes(parsed.intent)) {
+  if (['query_weather', 'query_overview', 'query_expense', 'query_budget', 'help'].includes(parsed.intent)) {
     return { intent: parsed.intent };
   }
 

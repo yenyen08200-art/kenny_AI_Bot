@@ -228,6 +228,14 @@ function tryParseExpenseSearch(text) {
   return null;
 }
 
+// 查剩餘預算(要放在記帳統計判斷附近,「預算」不會跟「花多少」等關鍵字衝突)
+function tryParseBudget(text) {
+  if (/^(剩餘預算|預算查詢|預算|查預算|還有多少錢可以花|還剩多少錢)$/.test(text)) {
+    return { intent: 'query_budget' };
+  }
+  return null;
+}
+
 // 刪除/修正最後一筆記帳
 function tryParseExpenseFix(text) {
   if (/^(?:刪掉|刪除|取消)\s*(?:剛剛|剛才|最後|上)(?:那|一)?筆/.test(text)) {
@@ -493,6 +501,7 @@ function parseWithRules(text) {
     tryParseNote(trimmed) ||
     tryParseExpenseFix(trimmed) ||
     tryParseExpenseSearch(trimmed) ||
+    tryParseBudget(trimmed) ||
     tryParseExpenseCompare(trimmed) ||
     tryParseExpenseQuery(trimmed, now) ||
     tryParseExpenseExplicit(trimmed) ||

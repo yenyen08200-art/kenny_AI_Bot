@@ -30,6 +30,7 @@ const { buildMorningBriefingFlex, buildListCard, COLOR, rainColor } = require('.
 const { getFreeSlotsForDay, WORK_START_HOUR, WORK_END_HOUR } = require('./services/freeSlotService');
 const { pushMessage } = require('./services/lineService');
 const sheetsService = require('./services/sheetsService');
+const { classify } = require('./services/expenseCategory');
 const taskManager = require('./modules/taskManager');
 
 // ── Secrets(名稱需對應 firebase functions:secrets:set 建立的名稱)──
@@ -142,6 +143,13 @@ function formatDateShort(iso) {
   });
 }
 
+// 抓出今天的生日/紀念日(全天事件,標題開頭是 🎂 或 🎉),回傳去掉 emoji 的名稱陣列
+function getSpecialDayNames(events) {
+  return events
+    .filter((e) => e.isAllDay && /^[🎂🎉]/u.test(e.summary))
+    .map((e) => e.summary.replace(/^[🎂🎉]\s*/u, ''));
+}
+
 // 常用指令改由「圖文選單」(rich menu,見 setup-richmenu.js)常駐提供,不再用 Quick Reply
 
 function reply(client, event, text) {
@@ -236,6 +244,7 @@ async function handleScheduleQuery(event, client, parsed) {
 async function handleOverview(event, client) {
   const auth = authorize();
   const [weather, events] = await Promise.all([getTodayWeather(), getEventsForDay(auth, 0)]);
+  const specialNames = getSpecialDayNames(events);
 
   const card = buildListCard({
     title: '☀️ 今日總覽',
@@ -249,6 +258,7 @@ async function handleOverview(event, client) {
     hero: { value: `${weather.rainChance}%`, label: `降雨機率・${weather.description}・${weather.minTemp}-${weather.maxTemp}°C` },
     accent: rainColor(weather.rainChance),
     sections: [
+      ...(specialNames.length ? [{ heading: '🎉 特別日子', rows: specialNames.map((n) => ({ left: n })) }] : []),
       {
         heading: `📅 今日行程(${events.length} 筆)`,
         rows: events.map((e) => ({ left: e.isAllDay ? '全天' : formatTime(e.start), right: e.summary })),
@@ -461,10 +471,29 @@ async function handleDeleteEvent(event, client, parsed) {
 }
 
 // ── 記帳 ──
+
+// 記帳後檢查剛剛入帳的分類這個月是不是已經超出預算(只有設定過預算的分類才會檢查)
+async function buildBudgetWarning(auth, items) {
+  const status = await sheetsService.getBudgetStatus(auth);
+  if (!status.items.length) return '';
+
+  const touched = new Set(items.map((i) => classify(i.item)));
+  const overs = status.items.filter((b) => touched.has(b.category) && b.remaining < 0);
+  if (!overs.length) return '';
+
+  return (
+    '\n\n' +
+    overs
+      .map((b) => `⚠️ ${b.category}本月已超支 $${Math.abs(b.remaining).toLocaleString()}(預算 $${b.budget.toLocaleString()},已花 $${b.spent.toLocaleString()})`)
+      .join('\n')
+  );
+}
+
 async function handleAddExpense(event, client, parsed) {
   const auth = authorize();
   await sheetsService.addExpense(auth, { item: parsed.item, amount: parsed.amount });
-  return reply(client, event, `💰 已記帳\n${parsed.item} $${parsed.amount}`);
+  const warning = await buildBudgetWarning(auth, [{ item: parsed.item }]);
+  return reply(client, event, `💰 已記帳\n${parsed.item} $${parsed.amount}${warning}`);
 }
 
 async function handleAddExpenses(event, client, parsed) {
@@ -472,7 +501,8 @@ async function handleAddExpenses(event, client, parsed) {
   await sheetsService.addExpenses(auth, parsed.entries);
   const total = parsed.entries.reduce((s, e) => s + e.amount, 0);
   const detail = parsed.entries.map((e) => `・${e.item} $${e.amount}`).join('\n');
-  return reply(client, event, `💰 已記帳 ${parsed.entries.length} 筆(共 $${total})\n${detail}`);
+  const warning = await buildBudgetWarning(auth, parsed.entries);
+  return reply(client, event, `💰 已記帳 ${parsed.entries.length} 筆(共 $${total})\n${detail}${warning}`);
 }
 
 async function handleDeleteLastExpense(event, client) {
@@ -489,13 +519,18 @@ async function handleUpdateLastExpense(event, client, parsed) {
   return reply(client, event, `✏️ 已修正\n${updated.item}:$${updated.oldAmount} → $${updated.newAmount}`);
 }
 
-function buildExpenseCard({ yearMonth, total, count, topItems }, { title, subtitle, accent, footerText } = {}) {
+function buildExpenseCard({ yearMonth, total, count, topItems }, byCategory, { title, subtitle, accent, footerText } = {}) {
   return buildListCard({
     title: title || `💰 ${yearMonth} 支出統計`,
     subtitle: subtitle || `${count} 筆紀錄`,
     accent,
     hero: { value: `$${total.toLocaleString()}`, label: `${yearMonth} 總支出・${count} 筆` },
     sections: [
+      {
+        heading: '📊 分類佔比',
+        rows: byCategory.map((c) => ({ left: c.category, right: `$${c.total.toLocaleString()}`, bold: true })),
+        emptyText: '這個月還沒有任何記帳紀錄',
+      },
       {
         heading: '花最多的項目',
         rows: topItems.map(([item, amount]) => ({ left: item, right: `$${amount.toLocaleString()}`, bold: true })),
@@ -508,12 +543,52 @@ function buildExpenseCard({ yearMonth, total, count, topItems }, { title, subtit
 
 async function handleExpenseQuery(event, client, parsed) {
   const auth = authorize();
-  const summary = await sheetsService.getMonthlyExpense(auth, parsed && parsed.yearMonth);
+  const yearMonth = parsed && parsed.yearMonth;
+  const [summary, byCategory] = await Promise.all([
+    sheetsService.getMonthlyExpense(auth, yearMonth),
+    sheetsService.getMonthlyExpenseByCategory(auth, yearMonth),
+  ]);
 
   if (!summary.count) {
     return reply(client, event, `💰 ${summary.yearMonth} 沒有任何記帳紀錄`);
   }
-  return replyCard(client, event, buildExpenseCard(summary));
+  return replyCard(client, event, buildExpenseCard(summary, byCategory));
+}
+
+// ── 剩餘預算 ──
+async function handleBudgetStatus(event, client) {
+  const auth = authorize();
+  const status = await sheetsService.getBudgetStatus(auth);
+
+  if (!status.items.length) {
+    return reply(
+      client,
+      event,
+      '📊 目前還沒有設定任何預算\n到 Google Sheet 的「預算」分頁,把想設定的分類金額改成大於 0 的數字就會開始追蹤(例如「房租」改成 3000)'
+    );
+  }
+
+  const card = buildListCard({
+    title: '💰 本月預算',
+    subtitle: status.yearMonth,
+    accent: status.totalRemaining < 0 ? COLOR.rainHigh : COLOR.rainLow,
+    hero: {
+      value: `$${status.totalRemaining.toLocaleString()}`,
+      label: `總剩餘・已花 $${status.totalSpent.toLocaleString()} / 預算 $${status.totalBudget.toLocaleString()}`,
+    },
+    sections: [
+      {
+        rows: status.items.map((b) => ({
+          left: b.category,
+          right: `$${b.spent.toLocaleString()} / $${b.budget.toLocaleString()}${b.remaining < 0 ? '⚠️' : ''}`,
+          bold: b.remaining < 0,
+        })),
+      },
+    ],
+    footerText: '要調整預算金額,到 Google Sheet 的「預算」分頁改就好',
+  });
+
+  return replyCard(client, event, card);
 }
 
 // ── 本月 vs 上月比較 ──
@@ -563,10 +638,11 @@ const HELP_SECTIONS = [
       { left: '記多筆', right: '早餐50 午餐120 晚餐200' },
       { left: '刪除', right: '刪掉剛剛那筆' },
       { left: '改金額', right: '改成 150' },
-      { left: '統計', right: '這個月花多少' },
+      { left: '統計', right: '這個月花多少(含分類佔比)' },
       { left: '查月份', right: '上個月花多少 / 7月花多少' },
       { left: '比較', right: '這個月比上個月多花多少' },
       { left: '搜尋', right: '找記帳 隨身碟' },
+      { left: '剩餘預算', right: '剩餘預算(要先在 Sheet 設定金額)' },
     ],
   },
   {
@@ -714,6 +790,7 @@ async function handleTextMessage(event, client) {
     update_last_expense: handleUpdateLastExpense,
     query_expense: handleExpenseQuery,
     query_expense_compare: handleExpenseCompare,
+    query_budget: handleBudgetStatus,
     add_note: handleAddNote,
     query_notes: handleQueryNotes,
     complete_note: handleCompleteNote,
@@ -780,6 +857,12 @@ exports.dailyBriefing = onSchedule(
 
     await pushMessage(flexMessage);
     logger.info('已推播 Flex Message 至 LINE');
+
+    const specialNames = getSpecialDayNames(events);
+    if (specialNames.length) {
+      await pushMessage(`🎉 提醒:今天是 ${specialNames.join('、')} 喔！`);
+      logger.info(`已推播特別日子提醒: ${specialNames.join('、')}`);
+    }
   }
 );
 
@@ -817,5 +900,50 @@ exports.weeklyReview = onSchedule(
 
     await pushMessage(card);
     logger.info('已推播週間回顧');
+  }
+);
+
+// ── ④ 排程:每月最後一天 20:00 月結報告(總支出、分類佔比、跟上月比較,不呼叫任何 AI)──
+// Cloud Scheduler 沒有「每月最後一天」語法,28-31 號每天都會觸發,
+// 這裡用「明天是不是這個月 1 號」判斷今天是不是最後一天,不是就跳過。
+exports.monthlyReview = onSchedule(
+  { schedule: '0 20 28-31 * *', timeZone: 'Asia/Taipei', secrets: WEEKLY_SECRETS, region: REGION },
+  async () => {
+    const tomorrow = taipeiDayStart(1);
+    const tomorrowDay = Number(
+      new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Taipei', day: '2-digit' }).format(tomorrow)
+    );
+    if (tomorrowDay !== 1) {
+      logger.info('今天不是這個月最後一天,略過月結');
+      return;
+    }
+
+    logger.info('開始產生月結報告...');
+    const auth = authorize();
+    const [byCategory, compare] = await Promise.all([
+      sheetsService.getMonthlyExpenseByCategory(auth),
+      sheetsService.compareMonthlyExpense(auth),
+    ]);
+    const { current, previous, diff } = compare;
+    const trend =
+      diff > 0 ? `多花了 $${diff.toLocaleString()}` : diff < 0 ? `少花了 $${Math.abs(diff).toLocaleString()}` : '跟上個月一樣';
+
+    const card = buildListCard({
+      title: '🧾 月結報告',
+      subtitle: current.yearMonth,
+      accent: diff > 0 ? COLOR.rainHigh : diff < 0 ? COLOR.rainLow : COLOR.primary,
+      hero: { value: `$${current.total.toLocaleString()}`, label: `本月總支出・${current.count} 筆・${trend}` },
+      sections: [
+        {
+          heading: '📊 分類佔比',
+          rows: byCategory.map((c) => ({ left: c.category, right: `$${c.total.toLocaleString()}`, bold: true })),
+          emptyText: '這個月還沒有記帳紀錄',
+        },
+      ],
+      footerText: `上月 $${previous.total.toLocaleString()}・${previous.count} 筆`,
+    });
+
+    await pushMessage(card);
+    logger.info('已推播月結報告');
   }
 );

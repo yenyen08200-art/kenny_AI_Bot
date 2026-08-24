@@ -3,9 +3,11 @@
 // 試算表由 setup-sheets.js 建立,ID 存在 GOOGLE_SHEETS_ID 這個 Secret。
 
 const { google } = require('googleapis');
+const { classify } = require('./expenseCategory');
 
 const EXPENSE_SHEET = '記帳';
 const NOTE_SHEET = '筆記';
+const BUDGET_SHEET = '預算';
 
 // 尚未跑過 setup-sheets.js 時,Secret 會是這個佔位值
 const NOT_CONFIGURED = 'NOT_SET';
@@ -84,6 +86,23 @@ async function getMonthlyExpense(auth, yearMonth = null) {
     .slice(0, 5);
 
   return { yearMonth: target, total, count: matched.length, topItems };
+}
+
+// 依分類統計某個月份(預設本月)的支出,分類由 expenseCategory.js 用關鍵字自動判斷
+async function getMonthlyExpenseByCategory(auth, yearMonth = null) {
+  const target = yearMonth || taipeiNowParts().yearMonth;
+  const rows = await readRows(auth, EXPENSE_SHEET);
+  const matched = rows.filter((r) => (r[0] || '').startsWith(target));
+
+  const byCategory = {};
+  for (const r of matched) {
+    const category = classify(r[2]);
+    byCategory[category] = (byCategory[category] || 0) + (Number(r[3]) || 0);
+  }
+
+  return Object.entries(byCategory)
+    .map(([category, total]) => ({ category, total }))
+    .sort((a, b) => b.total - a.total);
 }
 
 // 一次記多筆支出
@@ -187,6 +206,40 @@ async function compareMonthlyExpense(auth) {
   return { current, previous, diff: current.total - previous.total };
 }
 
+// ── 預算 ──
+
+// 讀「預算」分頁(分類 / 月預算),用 setup-budget.js 建立。回傳 { 分類: 金額 } 的物件,
+// 金額 <= 0 視為「沒設定」,不列入預算狀態
+async function getBudgets(auth) {
+  const rows = await readRows(auth, BUDGET_SHEET);
+  const budgets = {};
+  for (const r of rows) {
+    const category = r[0];
+    const amount = Number(r[1]);
+    if (category && Number.isFinite(amount) && amount > 0) budgets[category] = amount;
+  }
+  return budgets;
+}
+
+// 各分類「預算 vs 本月已花」的狀態,只列出有設定預算的分類
+async function getBudgetStatus(auth, yearMonth = null) {
+  const target = yearMonth || taipeiNowParts().yearMonth;
+  const [byCategory, budgets] = await Promise.all([getMonthlyExpenseByCategory(auth, target), getBudgets(auth)]);
+  const spentMap = Object.fromEntries(byCategory.map((c) => [c.category, c.total]));
+
+  const items = Object.entries(budgets)
+    .map(([category, budget]) => {
+      const spent = spentMap[category] || 0;
+      return { category, budget, spent, remaining: budget - spent };
+    })
+    .sort((a, b) => b.spent - a.spent);
+
+  const totalBudget = items.reduce((s, b) => s + b.budget, 0);
+  const totalSpent = items.reduce((s, b) => s + b.spent, 0);
+
+  return { yearMonth: target, items, totalBudget, totalSpent, totalRemaining: totalBudget - totalSpent };
+}
+
 // ── 筆記 ──
 
 // 新增一則不綁時間的筆記
@@ -258,8 +311,11 @@ module.exports = {
   addExpense,
   addExpenses,
   getMonthlyExpense,
+  getMonthlyExpenseByCategory,
   getWeeklyExpenseSummary,
   compareMonthlyExpense,
+  getBudgets,
+  getBudgetStatus,
   deleteLastExpense,
   updateLastExpenseAmount,
   searchExpenses,
@@ -270,5 +326,6 @@ module.exports = {
   searchNotes,
   EXPENSE_SHEET,
   NOTE_SHEET,
+  BUDGET_SHEET,
   SETUP_HINT,
 };
