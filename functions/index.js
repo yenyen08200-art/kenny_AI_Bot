@@ -635,6 +635,7 @@ const HELP_SECTIONS = [
     heading: '💰 記帳',
     rows: [
       { left: '記一筆', right: '午餐 120' },
+      { left: '加備註', right: '晚餐100 備註正宗排骨飯(之後可以搜尋到)' },
       { left: '記多筆', right: '早餐50 午餐120 晚餐200' },
       { left: '刪除', right: '刪掉剛剛那筆' },
       { left: '改金額', right: '改成 150' },
@@ -642,7 +643,10 @@ const HELP_SECTIONS = [
       { left: '查月份', right: '上個月花多少 / 7月花多少' },
       { left: '比較', right: '這個月比上個月多花多少' },
       { left: '搜尋', right: '找記帳 隨身碟' },
-      { left: '剩餘預算', right: '剩餘預算(要先在 Sheet 設定金額)' },
+      { left: '設定預算', right: '設定預算 房租 3000' },
+      { left: '剩餘預算', right: '剩餘預算' },
+      { left: '存款分配', right: '薪水32000 扣3000房租 扣5000存款' },
+      { left: '存款統計', right: '本月存了多少' },
     ],
   },
   {
@@ -749,6 +753,62 @@ async function handleSearchExpense(event, client, parsed) {
   return replyCard(client, event, card);
 }
 
+// ── 設定預算 ──
+async function handleSetBudget(event, client, parsed) {
+  const auth = authorize();
+  const category = classify(parsed.categoryText);
+  await sheetsService.setBudget(auth, category, parsed.amount);
+  return reply(client, event, `✅ 已設定「${category}」本月預算為 $${parsed.amount.toLocaleString()}`);
+}
+
+// ── 存款(不算支出)──
+async function handleSavingsQuery(event, client) {
+  const auth = authorize();
+  const summary = await sheetsService.getMonthlySavings(auth);
+
+  if (!summary.count) {
+    return reply(client, event, `💰 ${summary.yearMonth} 還沒有任何存款紀錄`);
+  }
+  return replyCard(
+    client,
+    event,
+    buildListCard({
+      title: `💰 ${summary.yearMonth} 存款統計`,
+      subtitle: `${summary.count} 筆紀錄`,
+      hero: { value: `$${summary.total.toLocaleString()}`, label: `${summary.yearMonth} 總存款・${summary.count} 筆` },
+      sections: [
+        {
+          heading: '存款明細',
+          rows: summary.topItems.map(([item, amount]) => ({ left: item, right: `$${amount.toLocaleString()}`, bold: true })),
+        },
+      ],
+      footerText: '存款不算進「這個月花多少」的支出統計',
+    })
+  );
+}
+
+// ── 薪水入帳一次分配到多個項目(支出 + 存款)──
+async function handleAddAllocation(event, client, parsed) {
+  const auth = authorize();
+  const tasks = [];
+  if (parsed.expenses.length) tasks.push(sheetsService.addExpenses(auth, parsed.expenses));
+  if (parsed.savings.length) tasks.push(sheetsService.addSavings(auth, parsed.savings));
+  await Promise.all(tasks);
+
+  const lines = ['💰 已記錄薪水分配'];
+  if (parsed.expenses.length) {
+    lines.push('', '支出:');
+    parsed.expenses.forEach((e) => lines.push(`・${e.item} $${e.amount}`));
+  }
+  if (parsed.savings.length) {
+    lines.push('', '存款(不算進本月支出):');
+    parsed.savings.forEach((s) => lines.push(`・${s.item} $${s.amount}`));
+  }
+
+  const warning = parsed.expenses.length ? await buildBudgetWarning(auth, parsed.expenses) : '';
+  return reply(client, event, lines.join('\n') + warning);
+}
+
 async function handleTextMessage(event, client) {
   const userId = event.source.userId;
   const text = event.message.text;
@@ -791,6 +851,9 @@ async function handleTextMessage(event, client) {
     query_expense: handleExpenseQuery,
     query_expense_compare: handleExpenseCompare,
     query_budget: handleBudgetStatus,
+    set_budget: handleSetBudget,
+    query_savings: handleSavingsQuery,
+    add_allocation: handleAddAllocation,
     add_note: handleAddNote,
     query_notes: handleQueryNotes,
     complete_note: handleCompleteNote,

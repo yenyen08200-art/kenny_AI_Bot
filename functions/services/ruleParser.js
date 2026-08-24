@@ -236,6 +236,46 @@ function tryParseBudget(text) {
   return null;
 }
 
+// 查這個月存了多少(存款是獨立一張表,不算進「這個月花多少」)
+function tryParseSavingsQuery(text) {
+  if (/存了多少|存款統計|存多少|本月存款/.test(text)) {
+    return { intent: 'query_savings' };
+  }
+  return null;
+}
+
+// 設定分類的月預算:「設定預算 房租 3000」。類別文字直接丟給 classify() 正規化,
+// 打錯字/寫法不同也會落到固定分類上,不會多開一個新分類
+function tryParseSetBudget(text) {
+  const m = text.match(/^(?:設定預算|預算設定|設預算)\s*(.+?)\s*(\d{1,7})\s*(?:元|塊)?$/);
+  if (!m) return null;
+  return { intent: 'set_budget', categoryText: m[1].trim(), amount: Number(m[2]) };
+}
+
+// 薪水入帳後一次分配到多個項目:「薪水32000 扣3000房租 扣2000水電 扣5000存款」
+// 「存款/儲蓄/存錢/定存」歸類成存款(不算支出),其餘歸類成一般支出
+function tryParseAllocation(text) {
+  if (!/^(?:薪水|收入|入帳)/.test(text)) return null;
+  const matches = [...text.matchAll(/扣\s*(\d{1,7})\s*(?:元|塊)?\s*([^\s\d,、]{1,12})/g)];
+  if (!matches.length) return null;
+
+  const expenses = [];
+  const savings = [];
+  for (const m of matches) {
+    const amount = Number(m[1]);
+    const item = m[2].trim();
+    if (!item || !amount) continue;
+    if (/存款|儲蓄|存錢|定存/.test(item)) {
+      savings.push({ item, amount });
+    } else {
+      expenses.push({ item, amount });
+    }
+  }
+  if (!expenses.length && !savings.length) return null;
+
+  return { intent: 'add_allocation', expenses, savings };
+}
+
 // 刪除/修正最後一筆記帳
 function tryParseExpenseFix(text) {
   if (/^(?:刪掉|刪除|取消)\s*(?:剛剛|剛才|最後|上)(?:那|一)?筆/.test(text)) {
@@ -268,21 +308,30 @@ function tryParseMultiExpense(text) {
   return { intent: 'add_expenses', entries };
 }
 
-// 明確寫法:「記帳 午餐 120」
-function tryParseExpenseExplicit(text) {
-  const m = text.match(/^(?:記帳|花費|支出)\s*[::]?\s*(.+?)\s*(\d{1,7})\s*(?:元|塊)?$/);
-  if (!m) return null;
-  return { intent: 'add_expense', item: m[1].trim().slice(0, 50), amount: Number(m[2]) };
+// 備註子句:「... 備註正宗排骨飯」放在品項後面,補充是花在哪(方便之後用「找記帳」查回來)
+const NOTE_CLAUSE = '(?:\\s*(?:備註|備注|註記)\\s*[::]?\\s*(.{1,50}))?';
+
+function withNote(item, note) {
+  const cleanItem = item.trim().slice(0, 50);
+  const cleanNote = note ? note.trim().slice(0, 50) : '';
+  return cleanNote ? `${cleanItem}・${cleanNote}` : cleanItem;
 }
 
-// 簡短寫法:「午餐 120」— 放在最後判斷,並排除看起來像時間/行程的句子
+// 明確寫法:「記帳 午餐 120」,可加「備註」補充細節
+function tryParseExpenseExplicit(text) {
+  const m = text.match(new RegExp(`^(?:記帳|花費|支出)\\s*[::]?\\s*(.+?)\\s*(\\d{1,7})\\s*(?:元|塊)?${NOTE_CLAUSE}$`));
+  if (!m) return null;
+  return { intent: 'add_expense', item: withNote(m[1], m[3]), amount: Number(m[2]) };
+}
+
+// 簡短寫法:「午餐 120」— 放在最後判斷,並排除看起來像時間/行程的句子,可加「備註」補充細節
 function tryParseExpenseImplicit(text) {
   if (NOT_EXPENSE_HINTS.test(text)) return null;
-  const m = text.match(/^(.{1,12}?)\s*(\d{1,7})\s*(?:元|塊)?$/);
+  const m = text.match(new RegExp(`^(.{1,12}?)\\s*(\\d{1,7})\\s*(?:元|塊)?${NOTE_CLAUSE}$`));
   if (!m) return null;
   const item = m[1].trim();
   if (!item) return null;
-  return { intent: 'add_expense', item: item.slice(0, 50), amount: Number(m[2]) };
+  return { intent: 'add_expense', item: withNote(item, m[3]), amount: Number(m[2]) };
 }
 
 // ── 指令說明 ──
@@ -502,6 +551,9 @@ function parseWithRules(text) {
     tryParseExpenseFix(trimmed) ||
     tryParseExpenseSearch(trimmed) ||
     tryParseBudget(trimmed) ||
+    tryParseSavingsQuery(trimmed) ||
+    tryParseSetBudget(trimmed) ||
+    tryParseAllocation(trimmed) ||
     tryParseExpenseCompare(trimmed) ||
     tryParseExpenseQuery(trimmed, now) ||
     tryParseExpenseExplicit(trimmed) ||

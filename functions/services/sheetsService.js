@@ -8,6 +8,7 @@ const { classify } = require('./expenseCategory');
 const EXPENSE_SHEET = '記帳';
 const NOTE_SHEET = '筆記';
 const BUDGET_SHEET = '預算';
+const SAVING_SHEET = '存款';
 
 // 尚未跑過 setup-sheets.js 時,Secret 會是這個佔位值
 const NOT_CONFIGURED = 'NOT_SET';
@@ -67,10 +68,10 @@ async function addExpense(auth, { item, amount }) {
   return { date, item, amount };
 }
 
-// 統計某個月份(預設本月)的支出總額與筆數
-async function getMonthlyExpense(auth, yearMonth = null) {
+// 統計某個工作表某個月份(預設本月)的總額與筆數,記帳/存款共用
+async function getMonthlySum(auth, sheetName, yearMonth = null) {
   const target = yearMonth || taipeiNowParts().yearMonth;
-  const rows = await readRows(auth, EXPENSE_SHEET);
+  const rows = await readRows(auth, sheetName);
 
   const matched = rows.filter((r) => (r[0] || '').startsWith(target));
   const total = matched.reduce((sum, r) => sum + (Number(r[3]) || 0), 0);
@@ -86,6 +87,29 @@ async function getMonthlyExpense(auth, yearMonth = null) {
     .slice(0, 5);
 
   return { yearMonth: target, total, count: matched.length, topItems };
+}
+
+// 統計某個月份(預設本月)的支出總額與筆數
+async function getMonthlyExpense(auth, yearMonth = null) {
+  return getMonthlySum(auth, EXPENSE_SHEET, yearMonth);
+}
+
+// 統計某個月份(預設本月)存了多少(不算進支出統計)
+async function getMonthlySavings(auth, yearMonth = null) {
+  return getMonthlySum(auth, SAVING_SHEET, yearMonth);
+}
+
+// 記一筆存款(轉去存的錢,不是花掉,所以獨立一張表,不會混進支出統計)
+async function addSavings(auth, entries) {
+  const { date, time } = taipeiNowParts();
+  const sheets = google.sheets({ version: 'v4', auth });
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: getSpreadsheetId(),
+    range: `${SAVING_SHEET}!A:D`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: entries.map((e) => [date, time, e.item, e.amount]) },
+  });
+  return entries.map((e) => ({ date, ...e }));
 }
 
 // 依分類統計某個月份(預設本月)的支出,分類由 expenseCategory.js 用關鍵字自動判斷
@@ -221,6 +245,25 @@ async function getBudgets(auth) {
   return budgets;
 }
 
+// 設定/更新單一分類的月預算(category 必須是 expenseCategory.js 裡的固定分類之一)
+async function setBudget(auth, category, amount) {
+  const sheets = google.sheets({ version: 'v4', auth });
+  const rows = await readRows(auth, BUDGET_SHEET);
+  const idx = rows.findIndex((r) => r[0] === category);
+
+  if (idx === -1) {
+    await appendRow(auth, BUDGET_SHEET, [category, amount]);
+    return;
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: getSpreadsheetId(),
+    range: `${BUDGET_SHEET}!B${idx + 2}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[amount]] },
+  });
+}
+
 // 各分類「預算 vs 本月已花」的狀態,只列出有設定預算的分類
 async function getBudgetStatus(auth, yearMonth = null) {
   const target = yearMonth || taipeiNowParts().yearMonth;
@@ -316,6 +359,9 @@ module.exports = {
   compareMonthlyExpense,
   getBudgets,
   getBudgetStatus,
+  setBudget,
+  addSavings,
+  getMonthlySavings,
   deleteLastExpense,
   updateLastExpenseAmount,
   searchExpenses,

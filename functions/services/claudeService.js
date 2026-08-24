@@ -16,6 +16,9 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "add_expense": 想記一筆支出(有品項與金額)
 - "query_expense": 在問這個月花了多少錢
 - "query_budget": 在問還剩多少預算/錢可以花
+- "set_budget": 想設定/修改某個分類的月預算(例如「設定預算 房租 3000」)
+- "query_savings": 在問這個月存了多少錢
+- "add_allocation": 薪水入帳後一次分配到多個項目,同時有支出跟存款(例如「薪水32000 扣3000房租 扣5000存款」)
 - "add_note": 想記一則不綁時間的筆記/備忘
 - "query_notes": 想看目前的待辦筆記
 - "complete_note": 想把某幾則筆記標記為完成
@@ -36,8 +39,11 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "specificTime": "query_schedule 問特定時間點時:ISO 8601 時間字串,否則 null",
   "dayOffset": "query_week:0=這週,7=下週",
   "days": "query_week:通常填 7",
-  "item": "add_expense:支出品項",
-  "amount": "add_expense:金額,純數字",
+  "item": "add_expense:支出品項,如果使用者有額外備註/說明,用「品項・備註」的格式合併成一個字串",
+  "amount": "add_expense / set_budget:金額,純數字",
+  "categoryText": "set_budget:分類文字(不用是精確分類名稱,系統會自動正規化)",
+  "expenses": "add_allocation:支出項目陣列,每個是 {item, amount}",
+  "savings": "add_allocation:存款項目陣列,每個是 {item, amount}",
   "content": "add_note:筆記內容",
   "indices": "complete_note / delete_note:第幾則的整數陣列,例如 [1] 或 [1,2]",
   "reason": "chitchat:簡短說明為什麼判斷成閒聊"
@@ -196,6 +202,33 @@ async function parseWithClaude(text) {
   if (parsed.intent === 'search_note' || parsed.intent === 'search_expense') {
     if (!parsed.keyword) return { intent: 'chitchat', reason: '沒有指明要搜尋什麼' };
     return { intent: parsed.intent, keyword: String(parsed.keyword).slice(0, 50) };
+  }
+
+  if (parsed.intent === 'query_savings') {
+    return { intent: 'query_savings' };
+  }
+
+  if (parsed.intent === 'set_budget') {
+    const amount = Number(parsed.amount);
+    if (!parsed.categoryText || !Number.isFinite(amount) || amount <= 0) {
+      return { intent: 'chitchat', reason: '沒有辨識出分類或金額' };
+    }
+    return { intent: 'set_budget', categoryText: String(parsed.categoryText).slice(0, 50), amount };
+  }
+
+  if (parsed.intent === 'add_allocation') {
+    const toEntries = (arr) =>
+      Array.isArray(arr)
+        ? arr
+            .map((e) => ({ item: String((e && e.item) || '').slice(0, 50), amount: Number(e && e.amount) }))
+            .filter((e) => e.item && Number.isFinite(e.amount) && e.amount > 0)
+        : [];
+    const expenses = toEntries(parsed.expenses);
+    const savings = toEntries(parsed.savings);
+    if (!expenses.length && !savings.length) {
+      return { intent: 'chitchat', reason: '沒有解析出任何分配項目' };
+    }
+    return { intent: 'add_allocation', expenses, savings };
   }
 
   return { intent: 'chitchat', reason: parsed.reason || '無法辨識意圖' };
