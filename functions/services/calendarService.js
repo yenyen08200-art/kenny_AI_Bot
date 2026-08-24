@@ -1,5 +1,6 @@
 // Google Calendar 服務:行程查詢、新增、刪除、搜尋
 const { google } = require('googleapis');
+const { taipeiDayStart } = require('./dateUtil');
 
 // 把 Google Calendar 的原始事件轉成本專案統一使用的格式(id 是刪除行程時要用的)
 function mapEvent(e) {
@@ -16,11 +17,8 @@ function mapEvent(e) {
 async function getEventsForDay(auth, dayOffset = 0) {
   const calendar = google.calendar({ version: 'v3', auth });
 
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() + dayOffset);
-  const end = new Date(start);
-  end.setHours(23, 59, 59, 999);
+  const start = taipeiDayStart(dayOffset);
+  const end = new Date(start.getTime() + 24 * 3600 * 1000 - 1);
 
   const res = await calendar.events.list({
     calendarId: 'primary',
@@ -42,11 +40,8 @@ async function getTodayEvents(auth) {
 async function getEventsForRange(auth, dayOffset = 0, days = 7) {
   const calendar = google.calendar({ version: 'v3', auth });
 
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() + dayOffset);
-  const end = new Date(start);
-  end.setDate(end.getDate() + days);
+  const start = taipeiDayStart(dayOffset);
+  const end = new Date(start.getTime() + days * 24 * 3600 * 1000);
 
   const res = await calendar.events.list({
     calendarId: 'primary',

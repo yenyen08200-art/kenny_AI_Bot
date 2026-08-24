@@ -21,6 +21,7 @@ const {
   updateEventTime,
   deleteEvent,
 } = require('./services/calendarService');
+const { taipeiDayStart } = require('./services/dateUtil');
 const { getTodayWeather } = require('./services/weatherService');
 const { generateBriefingData } = require('./services/aiService');
 const { parseWithRules } = require('./services/ruleParser');
@@ -384,15 +385,12 @@ async function handleReschedule(event, client, parsed) {
   const durationMs = new Date(target.end).getTime() - oldStart.getTime();
 
   const baseOffset = parsed.newDayOffset !== null ? parsed.newDayOffset : parsed.sourceDayOffset || 0;
-  const dayBase = new Date();
-  dayBase.setHours(0, 0, 0, 0);
-  dayBase.setDate(dayBase.getDate() + baseOffset);
+  const dayBase = taipeiDayStart(baseOffset);
 
   const hour = parsed.newHour !== null ? parsed.newHour : Number(formatTime(target.start).split(':')[0]);
   const minute = parsed.newMinute !== null ? parsed.newMinute : Number(formatTime(target.start).split(':')[1]);
 
-  const newStart = new Date(dayBase);
-  newStart.setHours(hour, minute, 0, 0);
+  const newStart = new Date(dayBase.getTime() + (hour * 60 + minute) * 60 * 1000);
   const newEnd = new Date(newStart.getTime() + durationMs);
 
   const updated = await updateEventTime(auth, target.id, {
