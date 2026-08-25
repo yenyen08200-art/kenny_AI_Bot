@@ -43,8 +43,10 @@ async function getTodayWeather() {
   };
 }
 
-// 取得未來 7 天的每日天氣(天氣現象 + 高低溫)。這份資料集沒有降雨機率
-// (CWA 只在 36 小時內提供 12 小時降雨機率,超過就只給現象描述跟氣溫)
+// 取得未來 7 天的每日天氣(天氣現象 + 高低溫 + 降雨機率)。
+// 一週預報(F-C0032-005)本身沒有降雨機率——CWA 只在 36 小時內提供 12 小時降雨機率,
+// 所以額外查 36 小時預報(F-C0032-001)的 PoP,把有的那 1-2 天併進去;
+// 更後面的日子就沒有降雨機率資料,rainChance 會是 null。
 async function getWeeklyWeather() {
   const apiKey = process.env.CWA_API_KEY;
   const location = process.env.CWA_LOCATION || '臺南市';
@@ -53,11 +55,12 @@ async function getWeeklyWeather() {
     throw new Error('缺少 CWA_API_KEY,請至 .env 設定中央氣象署開放資料 API 金鑰。');
   }
 
-  const res = await axios.get(WEEKLY_ENDPOINT, {
-    params: { Authorization: apiKey, format: 'JSON' },
-  });
+  const [weeklyRes, shortRes] = await Promise.all([
+    axios.get(WEEKLY_ENDPOINT, { params: { Authorization: apiKey, format: 'JSON' } }),
+    axios.get(CWA_ENDPOINT, { params: { Authorization: apiKey, locationName: location } }),
+  ]);
 
-  const locations = res.data?.cwaopendata?.dataset?.location || [];
+  const locations = weeklyRes.data?.cwaopendata?.dataset?.location || [];
   const loc = locations.find((l) => l.locationName === location);
   if (!loc) {
     throw new Error(`查無「${location}」的一週天氣資料,請確認 CWA_LOCATION 是否為正確的縣市名稱。`);
@@ -71,7 +74,9 @@ async function getWeeklyWeather() {
   const days = new Map();
   for (const t of elements.Wx || []) {
     const date = t.startTime.slice(0, 10);
-    if (!days.has(date)) days.set(date, { date, description: t.parameter.parameterName, maxTemp: -Infinity, minTemp: Infinity });
+    if (!days.has(date)) {
+      days.set(date, { date, description: t.parameter.parameterName, maxTemp: -Infinity, minTemp: Infinity, rainChance: null });
+    }
   }
   for (const t of elements.MaxT || []) {
     const day = days.get(t.startTime.slice(0, 10));
@@ -80,6 +85,15 @@ async function getWeeklyWeather() {
   for (const t of elements.MinT || []) {
     const day = days.get(t.startTime.slice(0, 10));
     if (day) day.minTemp = Math.min(day.minTemp, Number(t.parameter.parameterName));
+  }
+
+  // 把 36 小時預報裡的降雨機率併進對應日期(同一天取較高的那個時段,保守起見)
+  const shortLoc = shortRes.data?.records?.location?.[0];
+  const popEl = shortLoc?.weatherElement?.find((e) => e.elementName === 'PoP');
+  for (const t of popEl?.time || []) {
+    const day = days.get(t.startTime.slice(0, 10));
+    const val = Number(t.parameter?.parameterName);
+    if (day && Number.isFinite(val)) day.rainChance = day.rainChance === null ? val : Math.max(day.rainChance, val);
   }
 
   return { location, days: [...days.values()] };

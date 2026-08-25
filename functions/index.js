@@ -1036,19 +1036,32 @@ async function handleTeachCategory(event, client, parsed) {
 }
 
 // ── 一週天氣 ──
+// 依天氣現象文字挑一個代表性的 emoji,一眼就能掃過去大概什麼天氣
+function weatherEmoji(desc) {
+  if (/雷/.test(desc)) return '⛈️';
+  if (/雨/.test(desc)) return '🌧️';
+  if (/晴/.test(desc) && /雲/.test(desc)) return '⛅';
+  if (/晴/.test(desc)) return '☀️';
+  if (/雲|陰/.test(desc)) return '☁️';
+  return '🌤️';
+}
+
 async function handleWeeklyWeather(event, client) {
   const { location, days } = await getWeeklyWeather();
   const card = buildListCard({
     title: `📅 ${location} 一週天氣`,
     subtitle: '未來 7 天預報',
-    sections: [
-      {
-        // 日期(含星期幾)+天氣+氣溫全部併成一個 left,不分左右欄——分兩欄在窄螢幕上
-        // 日期含星期幾會被切斷看不到,併成一行、讓它自然換行,不會被裁切
-        rows: days.map((d) => ({ left: `${formatDateShort(d.date)} ${d.description}・${d.minTemp}-${d.maxTemp}°C` })),
-      },
-    ],
-    footerText: '超過 36 小時的預報沒有降雨機率資料,只顯示天氣現象跟氣溫',
+    // 每天獨立一個 section(標題=日期含星期幾,內容=天氣+降雨+氣溫全部併一行),
+    // 標題是滿版文字不會被裁切,section 之間自動有分隔線,一天一天分開看比較清楚
+    sections: days.slice(0, 7).map((d) => ({
+      heading: formatDateShort(d.date),
+      rows: [
+        {
+          left: `${weatherEmoji(d.description)} ${d.description}${d.rainChance !== null ? `・☔${d.rainChance}%` : ''}・🌡️${d.minTemp}-${d.maxTemp}°C`,
+        },
+      ],
+    })),
+    footerText: '☔ 降雨機率只有 36 小時內的預報才有,更遠的日子暫時沒有資料',
   });
   return replyCard(client, event, card);
 }
