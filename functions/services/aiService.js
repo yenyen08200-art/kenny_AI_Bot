@@ -60,27 +60,30 @@ function fallbackBriefing({ weather, events }) {
 }
 
 // 呼叫 Gemini,回傳結構化簡報資料(供 flexMessageBuilder 綁定使用)
+//
+// Gemini 呼叫整段包在 try/catch 裡(不只是 JSON 解析那段):額度用完、帳單問題、
+// 網路逾時等任何原因失敗,都直接退回 fallbackBriefing 的樣板文案,確保晨報一定會送出,
+// 不會因為 AI 那句話生不出來就整篇晨報消失不見。
 async function generateBriefingData({ weather, events }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('缺少 GEMINI_API_KEY,請至 .env 設定 Gemini API 金鑰。');
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
-    generationConfig: { responseMimeType: 'application/json' },
-  });
-
-  const prompt = buildPrompt({ weather, events });
-  const result = await model.generateContent(prompt);
-  const rawText = result.response.text();
-
   let parsed;
   try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+      model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+      generationConfig: { responseMimeType: 'application/json' },
+    });
+
+    const prompt = buildPrompt({ weather, events });
+    const result = await model.generateContent(prompt);
+    const rawText = result.response.text();
     parsed = extractJson(rawText);
   } catch (err) {
-    console.error('[aiService] Gemini 回傳非合法 JSON,改用預設文案。原始內容:', rawText);
+    console.error('[aiService] Gemini 呼叫失敗,改用預設文案。', err.message);
     parsed = fallbackBriefing({ weather, events });
   }
 
