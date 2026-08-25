@@ -898,9 +898,19 @@ async function handleRemoveAccount(event, client, parsed) {
 
 async function handleSetAccountBalance(event, client, parsed) {
   const auth = authorize();
-  const resolved = (await sheetsService.resolveAccountName(auth, parsed.name)) || parsed.name;
-  await sheetsService.setAccountBaseline(auth, resolved, parsed.balance);
-  return reply(client, event, `✅ 已校正「${resolved}」餘額為 $${parsed.balance.toLocaleString()}`);
+  const resolved = await sheetsService.resolveAccountName(auth, parsed.name);
+
+  // strict(「現金是488」這種陳述句):比對不到真正的帳戶就不亂建帳戶,請使用者確認
+  // 非 strict(明確的「設定帳戶 X Y」指令):比對不到就直接拿使用者打的字當新帳戶名稱
+  if (!resolved && parsed.strict) {
+    const accounts = await sheetsService.getAccounts(auth);
+    const names = accounts.map((a) => a.name).join('、') || '(還沒有任何帳戶)';
+    return reply(client, event, `🤔 找不到帳戶「${parsed.name}」\n目前的帳戶:${names}`);
+  }
+
+  const finalName = resolved || parsed.name;
+  await sheetsService.setAccountBaseline(auth, finalName, parsed.balance);
+  return reply(client, event, `✅ 已校正「${finalName}」餘額為 $${parsed.balance.toLocaleString()}`);
 }
 
 async function handleAccountBalances(event, client) {

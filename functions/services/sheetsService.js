@@ -286,10 +286,17 @@ async function getBudgetStatus(auth, yearMonth = null) {
 // 帳戶餘額不是存一個容易跑掉的累計數字,而是「起始餘額 + 起始日期之後的異動」每次
 // 查詢當下重新加總——記帳、改資料、刪記錄都不會讓餘額對不起來。
 
-// 讀所有帳戶(名稱 / 起始餘額 / 起始日期)
+// 記帳/轉帳的「日期 時間」組成排序用的鍵值,跟帳戶的起始時間用同一套格式比大小。
+// 舊資料只有日期沒有時間也沒關係:"2026-08-25" 在字串排序上小於 "2026-08-25 12:45",
+// 效果等同「這天一整天都算」,跟原本只比對日期的邏輯相容
+function dateTimeKey(date, time) {
+  return `${date || ''} ${time || ''}`.trim();
+}
+
+// 讀所有帳戶(名稱 / 起始餘額 / 起始時間)
 async function getAccounts(auth) {
   const rows = await readRows(auth, ACCOUNT_SHEET);
-  return rows.filter((r) => r[0]).map((r) => ({ name: r[0], startBalance: Number(r[1]) || 0, startDate: r[2] || '1970-01-01' }));
+  return rows.filter((r) => r[0]).map((r) => ({ name: r[0], startBalance: Number(r[1]) || 0, startDateTime: r[2] || '1970-01-01' }));
 }
 
 // 把使用者打的文字對應到真實帳戶名稱(完全比對優先,再寬鬆比對),找不到回傳 null
@@ -310,9 +317,10 @@ async function addAccount(auth, name, startBalance = 0) {
   if (accounts.some((a) => a.name === name)) {
     throw new Error(`帳戶「${name}」已經存在`);
   }
-  const { date } = taipeiNowParts();
-  await appendRow(auth, ACCOUNT_SHEET, [name, startBalance, date]);
-  return { name, startBalance, startDate: date };
+  const { date, time } = taipeiNowParts();
+  const startDateTime = dateTimeKey(date, time);
+  await appendRow(auth, ACCOUNT_SHEET, [name, startBalance, startDateTime]);
+  return { name, startBalance, startDateTime };
 }
 
 // 移除帳戶(只是不再追蹤,歷史記帳/轉帳紀錄不會被刪除或改動)
@@ -332,16 +340,17 @@ async function removeAccount(auth, name) {
   return true;
 }
 
-// 校正帳戶餘額(手動對過帳、跟現實金額對不上時強制同步):起始日期重設為今天,
-// 今天以前的記帳/轉帳都不會再影響這個帳戶的餘額計算
+// 校正帳戶餘額(手動對過帳、跟現實金額對不上時強制同步):起始時間重設為「現在這一刻」
+// (精確到分鐘,不是只到日期),校正之前(含當天稍早)的記帳/轉帳都不會再重複影響餘額
 async function setAccountBaseline(auth, name, balance) {
   const sheets = google.sheets({ version: 'v4', auth });
   const rows = await readRows(auth, ACCOUNT_SHEET);
   const idx = rows.findIndex((r) => r[0] === name);
-  const { date } = taipeiNowParts();
+  const { date, time } = taipeiNowParts();
+  const startDateTime = dateTimeKey(date, time);
 
   if (idx === -1) {
-    await appendRow(auth, ACCOUNT_SHEET, [name, balance, date]);
+    await appendRow(auth, ACCOUNT_SHEET, [name, balance, startDateTime]);
     return;
   }
 
@@ -349,7 +358,7 @@ async function setAccountBaseline(auth, name, balance) {
     spreadsheetId: getSpreadsheetId(),
     range: `${ACCOUNT_SHEET}!B${idx + 2}:C${idx + 2}`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[balance, date]] },
+    requestBody: { values: [[balance, startDateTime]] },
   });
 }
 
@@ -362,13 +371,13 @@ async function getAllAccountBalances(auth) {
 
   return accounts.map((account) => {
     const spent = expenseRows
-      .filter((r) => (r[0] || '') >= account.startDate && r[4] === account.name)
+      .filter((r) => dateTimeKey(r[0], r[1]) >= account.startDateTime && r[4] === account.name)
       .reduce((s, r) => s + (Number(r[3]) || 0), 0);
     const transferredOut = transferRows
-      .filter((r) => (r[0] || '') >= account.startDate && r[2] === account.name)
+      .filter((r) => dateTimeKey(r[0], r[1]) >= account.startDateTime && r[2] === account.name)
       .reduce((s, r) => s + (Number(r[4]) || 0), 0);
     const transferredIn = transferRows
-      .filter((r) => (r[0] || '') >= account.startDate && r[3] === account.name)
+      .filter((r) => dateTimeKey(r[0], r[1]) >= account.startDateTime && r[3] === account.name)
       .reduce((s, r) => s + (Number(r[4]) || 0), 0);
     return { name: account.name, balance: account.startBalance - spent - transferredOut + transferredIn };
   });

@@ -335,6 +335,15 @@ function tryParseAllocation(text) {
   return { intent: 'add_allocation', expenses, savings };
 }
 
+// 陳述式帳戶餘額校正:「現金是488」「現金現在是488」——要放在記帳規則前面判斷,
+// 不然「XX是NNN」會被 tryParseExpenseImplicit 誤判成「品項=XX是,金額=NNN」的支出。
+// strict:true 表示比對不到真正的帳戶就不亂建帳戶,回覆請使用者確認,而不是靜默記錯
+function tryParseAccountBalanceStatement(text) {
+  const m = text.match(/^(.{1,10}?)(?:現在)?是\s*(\d{1,9})\s*(?:元|塊)?$/);
+  if (!m) return null;
+  return { intent: 'set_account_balance', name: m[1].trim(), balance: Number(m[2]), strict: true };
+}
+
 // ── 帳戶 / 轉帳 ──
 
 // 轉帳:「我從錢袋拿1000放現金」「從錢袋轉1000到現金」「錢袋轉帳1000給現金」
@@ -669,6 +678,7 @@ function parseWithRules(text) {
     tryParseAddAccount(trimmed) ||
     tryParseRemoveAccount(trimmed) ||
     tryParseSetAccountBalance(trimmed) ||
+    tryParseAccountBalanceStatement(trimmed) ||
     tryParseAccountBalanceQuery(trimmed) ||
     tryParseTransfer(trimmed) ||
     tryParseAllocation(trimmed) ||
