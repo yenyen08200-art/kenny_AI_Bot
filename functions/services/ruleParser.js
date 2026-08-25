@@ -1,6 +1,8 @@
 // 純規則(不呼叫任何 AI)判斷訊息意圖 + 解析中文時間片語
 // 涵蓋日常大部分句型;規則判斷不出來時,回傳 null,交給上層 fallback 給 Claude
 
+const { classify, DEFAULT_CATEGORY } = require('./expenseCategory');
+
 const WEEKDAY_MAP = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
 
 const WEATHER_KEYWORDS = /天氣|會不會下雨|降雨|要不要帶傘|氣溫|會下雨嗎/;
@@ -389,6 +391,52 @@ function tryParseAccountBalanceQuery(text) {
   return null;
 }
 
+// 設定帳戶目標(存款目標之類):「設定目標 存款 50000」「存款目標 50000」
+function tryParseSetAccountGoal(text) {
+  const m =
+    text.match(/^設定目標\s*(.{1,10}?)\s*(\d{1,9})$/) || text.match(/^(.{1,10}?)目標\s*(\d{1,9})$/);
+  if (!m) return null;
+  return { intent: 'set_account_goal', name: m[1].trim(), goal: Number(m[2]) };
+}
+
+// 某個帳戶的異動明細:「現金明細」「錢袋明細」
+function tryParseAccountLedger(text) {
+  const m = text.match(/^(.{1,10}?)明細$/);
+  if (!m || !m[1].trim()) return null;
+  return { intent: 'account_ledger', accountText: m[1].trim() };
+}
+
+// 全部轉帳紀錄(不限帳戶):「查轉帳」「轉帳紀錄」「轉帳明細」
+function tryParseTransferHistory(text) {
+  if (/^(查轉帳|轉帳紀錄|轉帳明細|轉帳查詢)$/.test(text)) {
+    return { intent: 'query_transfers' };
+  }
+  return null;
+}
+
+// 教分類關鍵字:「星巴克算學習工作」——類別文字丟給 classify() 正規化,
+// 只能對應到既有的固定分類,不會憑空生出新分類。
+// 「算」是日常對話也會用到的字(這樣算貴、不划算…),所以這裡先用同步版的
+// classify() 檢查類別文字是不是真的對應到某個固定分類,對不到就直接放棄比對、
+// 讓這句話繼續往下走其他規則或 Claude,而不是把閒聊誤判成教學指令
+function tryParseTeachCategory(text) {
+  const m = text.match(/^(.{1,15}?)算(.{1,10})$/);
+  if (!m) return null;
+  const keyword = m[1].trim();
+  const categoryText = m[2].trim();
+  if (!keyword || !categoryText) return null;
+  if (classify(categoryText) === DEFAULT_CATEGORY) return null;
+  return { intent: 'teach_category', keyword, categoryText };
+}
+
+// 一週天氣:「這週天氣」「一週天氣」「未來天氣」
+function tryParseWeeklyWeather(text) {
+  if (/這週天氣|一週天氣|未來天氣|七天天氣|一週預報/.test(text)) {
+    return { intent: 'query_weekly_weather' };
+  }
+  return null;
+}
+
 // 刪除/修正最後一筆記帳
 function tryParseExpenseFix(text) {
   if (/^(?:刪掉|刪除|取消)\s*(?:剛剛|剛才|最後|上)(?:那|一)?筆/.test(text)) {
@@ -679,13 +727,17 @@ function parseWithRules(text) {
     tryParseRemoveAccount(trimmed) ||
     tryParseSetAccountBalance(trimmed) ||
     tryParseAccountBalanceStatement(trimmed) ||
+    tryParseSetAccountGoal(trimmed) ||
     tryParseAccountBalanceQuery(trimmed) ||
+    tryParseAccountLedger(trimmed) ||
+    tryParseTransferHistory(trimmed) ||
     tryParseTransfer(trimmed) ||
     tryParseAllocation(trimmed) ||
     tryParseExpenseCompare(trimmed) ||
     tryParseExpenseDateQuery(trimmed, now) ||
     tryParseExpenseQuery(trimmed, now) ||
     tryParseExpenseExplicit(trimmed) ||
+    tryParseWeeklyWeather(trimmed) ||
     tryParseFreeSlots(trimmed, now) ||
     tryParseReschedule(trimmed, now) ||
     tryParseDeleteEvent(trimmed, now) ||
@@ -695,6 +747,7 @@ function parseWithRules(text) {
     tryParseRecurring(trimmed, now) ||
     tryParseSearchEvent(trimmed) ||
     tryParseAddEvent(trimmed, now) ||
+    tryParseTeachCategory(trimmed) ||
     tryParseMultiExpense(trimmed) ||
     tryParseExpenseImplicit(trimmed)
   );

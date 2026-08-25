@@ -10,6 +10,7 @@ const NOTE_SHEET = '筆記';
 const BUDGET_SHEET = '預算';
 const ACCOUNT_SHEET = '帳戶';
 const TRANSFER_SHEET = '轉帳';
+const CATEGORY_RULE_SHEET = '自訂分類';
 const DEFAULT_ACCOUNT = '現金';
 
 // 尚未跑過 setup-sheets.js 時,Secret 會是這個佔位值
@@ -97,14 +98,25 @@ async function getMonthlyExpense(auth, yearMonth = null) {
 }
 
 // 依分類統計某個月份(預設本月)的支出,分類由 expenseCategory.js 用關鍵字自動判斷
+// 讀使用者自己教的分類關鍵字(例如「星巴克算學習工作」),優先於內建規則比對
+async function getCustomCategoryRules(auth) {
+  const rows = await readRows(auth, CATEGORY_RULE_SHEET);
+  return rows.filter((r) => r[0] && r[1]).map((r) => ({ keyword: r[0], category: r[1] }));
+}
+
+// 新增一條自訂分類規則(category 已經是正規化過的固定分類名稱)
+async function addCustomCategoryRule(auth, keyword, category) {
+  await appendRow(auth, CATEGORY_RULE_SHEET, [keyword, category]);
+}
+
 async function getMonthlyExpenseByCategory(auth, yearMonth = null) {
   const target = yearMonth || taipeiNowParts().yearMonth;
-  const rows = await readRows(auth, EXPENSE_SHEET);
+  const [rows, customRules] = await Promise.all([readRows(auth, EXPENSE_SHEET), getCustomCategoryRules(auth)]);
   const matched = rows.filter((r) => (r[0] || '').startsWith(target));
 
   const byCategory = {};
   for (const r of matched) {
-    const category = classify(r[2]);
+    const category = classify(r[2], customRules);
     byCategory[category] = (byCategory[category] || 0) + (Number(r[3]) || 0);
   }
 
@@ -293,10 +305,28 @@ function dateTimeKey(date, time) {
   return `${date || ''} ${time || ''}`.trim();
 }
 
-// 讀所有帳戶(名稱 / 起始餘額 / 起始時間)
+// 讀所有帳戶(名稱 / 起始餘額 / 起始時間 / 目標金額,目標是 0 代表沒設定)
 async function getAccounts(auth) {
   const rows = await readRows(auth, ACCOUNT_SHEET);
-  return rows.filter((r) => r[0]).map((r) => ({ name: r[0], startBalance: Number(r[1]) || 0, startDateTime: r[2] || '1970-01-01' }));
+  return rows
+    .filter((r) => r[0])
+    .map((r) => ({ name: r[0], startBalance: Number(r[1]) || 0, startDateTime: r[2] || '1970-01-01', goal: Number(r[3]) || 0 }));
+}
+
+// 設定/取消某個帳戶的目標金額(存款目標之類),goal 填 0 代表取消目標
+async function setAccountGoal(auth, name, goal) {
+  const sheets = google.sheets({ version: 'v4', auth });
+  const rows = await readRows(auth, ACCOUNT_SHEET);
+  const idx = rows.findIndex((r) => r[0] === name);
+  if (idx === -1) return false;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: getSpreadsheetId(),
+    range: `${ACCOUNT_SHEET}!D${idx + 2}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[goal]] },
+  });
+  return true;
 }
 
 // 把使用者打的文字對應到真實帳戶名稱(完全比對優先,再寬鬆比對),找不到回傳 null
@@ -379,7 +409,8 @@ async function getAllAccountBalances(auth) {
     const transferredIn = transferRows
       .filter((r) => dateTimeKey(r[0], r[1]) >= account.startDateTime && r[3] === account.name)
       .reduce((s, r) => s + (Number(r[4]) || 0), 0);
-    return { name: account.name, balance: account.startBalance - spent - transferredOut + transferredIn };
+    const balance = account.startBalance - spent - transferredOut + transferredIn;
+    return { name: account.name, balance, goal: account.goal };
   });
 }
 
@@ -388,6 +419,34 @@ async function addTransfer(auth, { from, to, amount, note = '' }) {
   const { date, time } = taipeiNowParts();
   await appendRow(auth, TRANSFER_SHEET, [date, time, from, to, amount, note]);
   return { date, from, to, amount };
+}
+
+// 某個帳戶最近的異動明細(記帳支出 + 轉帳進出),依時間新到舊排序
+async function getAccountLedger(auth, accountName, limit = 15) {
+  const [expenseRows, transferRows] = await Promise.all([readRows(auth, EXPENSE_SHEET), readRows(auth, TRANSFER_SHEET)]);
+
+  const entries = [];
+  for (const r of expenseRows) {
+    if (r[4] === accountName) {
+      entries.push({ date: r[0], time: r[1], desc: r[2], amount: -(Number(r[3]) || 0) });
+    }
+  }
+  for (const r of transferRows) {
+    if (r[2] === accountName) entries.push({ date: r[0], time: r[1], desc: `轉出到「${r[3]}」`, amount: -(Number(r[4]) || 0) });
+    if (r[3] === accountName) entries.push({ date: r[0], time: r[1], desc: `「${r[2]}」轉入`, amount: Number(r[4]) || 0 });
+  }
+
+  entries.sort((a, b) => (dateTimeKey(b.date, b.time) > dateTimeKey(a.date, a.time) ? 1 : -1));
+  return entries.slice(0, limit);
+}
+
+// 最近的轉帳紀錄(不限帳戶),依時間新到舊排序
+async function getRecentTransfers(auth, limit = 15) {
+  const rows = await readRows(auth, TRANSFER_SHEET);
+  return rows
+    .map((r) => ({ date: r[0], time: r[1], from: r[2], to: r[3], amount: Number(r[4]) || 0, note: r[5] || '' }))
+    .sort((a, b) => (dateTimeKey(b.date, b.time) > dateTimeKey(a.date, a.time) ? 1 : -1))
+    .slice(0, limit);
 }
 
 // ── 筆記 ──
@@ -473,8 +532,13 @@ module.exports = {
   addAccount,
   removeAccount,
   setAccountBaseline,
+  setAccountGoal,
   getAllAccountBalances,
   addTransfer,
+  getAccountLedger,
+  getRecentTransfers,
+  getCustomCategoryRules,
+  addCustomCategoryRule,
   deleteLastExpense,
   updateLastExpenseAmount,
   searchExpenses,
@@ -488,6 +552,7 @@ module.exports = {
   BUDGET_SHEET,
   ACCOUNT_SHEET,
   TRANSFER_SHEET,
+  CATEGORY_RULE_SHEET,
   DEFAULT_ACCOUNT,
   SETUP_HINT,
 };

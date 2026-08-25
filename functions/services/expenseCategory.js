@@ -22,8 +22,13 @@ const DEFAULT_CATEGORY = '生活費';
 
 const CATEGORY_NAMES = [...CATEGORY_RULES.map((r) => r.name), DEFAULT_CATEGORY];
 
-function classify(item) {
+// customRules 是使用者自己教的關鍵字對應(例如「星巴克算學習工作」),格式
+// [{ keyword, category }],優先比對——教過的東西比內建規則更準,應該優先採用
+function classify(item, customRules = []) {
   const text = item || '';
+  for (const rule of customRules) {
+    if (rule.keyword && text.includes(rule.keyword)) return rule.category;
+  }
   for (const rule of CATEGORY_RULES) {
     if (rule.pattern.test(text)) return rule.name;
   }

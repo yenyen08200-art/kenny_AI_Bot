@@ -22,7 +22,7 @@ const {
   deleteEvent,
 } = require('./services/calendarService');
 const { taipeiDayStart } = require('./services/dateUtil');
-const { getTodayWeather } = require('./services/weatherService');
+const { getTodayWeather, getWeeklyWeather } = require('./services/weatherService');
 const { generateBriefingData } = require('./services/aiService');
 const { parseWithRules } = require('./services/ruleParser');
 const { parseWithClaude } = require('./services/claudeService');
@@ -30,7 +30,7 @@ const { buildMorningBriefingFlex, buildListCard, buildCategoryPieChartUrl, COLOR
 const { getFreeSlotsForDay, WORK_START_HOUR, WORK_END_HOUR } = require('./services/freeSlotService');
 const { pushMessage } = require('./services/lineService');
 const sheetsService = require('./services/sheetsService');
-const { classify } = require('./services/expenseCategory');
+const { classify, DEFAULT_CATEGORY } = require('./services/expenseCategory');
 const taskManager = require('./modules/taskManager');
 
 // ── Secrets(名稱需對應 firebase functions:secrets:set 建立的名稱)──
@@ -488,6 +488,18 @@ async function buildBudgetWarning(auth, items) {
   );
 }
 
+// 記帳/轉帳後檢查有沒有把哪個帳戶花成負的
+async function buildAccountWarning(auth, accountNames) {
+  const names = [...new Set(accountNames.filter(Boolean))];
+  if (!names.length) return '';
+
+  const balances = await sheetsService.getAllAccountBalances(auth);
+  const negatives = balances.filter((b) => names.includes(b.name) && b.balance < 0);
+  if (!negatives.length) return '';
+
+  return '\n\n' + negatives.map((b) => `⚠️ ${b.name}餘額已經是負的:$${b.balance.toLocaleString()}`).join('\n');
+}
+
 // 把「品項後面那個候選帳戶詞」對應到真正的帳戶;對不到的話,不要憑空吃掉使用者打的字,
 // 直接併回品項裡,帳戶預設現金
 async function resolveExpenseAccount(auth, item, accountText) {
@@ -501,8 +513,11 @@ async function handleAddExpense(event, client, parsed) {
   const auth = authorize();
   const { item, account } = await resolveExpenseAccount(auth, parsed.item, parsed.accountText);
   await sheetsService.addExpense(auth, { item, amount: parsed.amount, account });
-  const warning = await buildBudgetWarning(auth, [{ item }]);
-  return reply(client, event, `💰 已記帳(${account})\n${item} $${parsed.amount}${warning}`);
+  const [budgetWarning, accountWarning] = await Promise.all([
+    buildBudgetWarning(auth, [{ item }]),
+    buildAccountWarning(auth, [account]),
+  ]);
+  return reply(client, event, `💰 已記帳(${account})\n${item} $${parsed.amount}${budgetWarning}${accountWarning}`);
 }
 
 async function handleAddExpenses(event, client, parsed) {
@@ -511,8 +526,11 @@ async function handleAddExpenses(event, client, parsed) {
   await sheetsService.addExpenses(auth, entries);
   const total = entries.reduce((s, e) => s + e.amount, 0);
   const detail = entries.map((e) => `・${e.item} $${e.amount}`).join('\n');
-  const warning = await buildBudgetWarning(auth, entries);
-  return reply(client, event, `💰 已記帳 ${entries.length} 筆(共 $${total}・${sheetsService.DEFAULT_ACCOUNT})\n${detail}${warning}`);
+  const [budgetWarning, accountWarning] = await Promise.all([
+    buildBudgetWarning(auth, entries),
+    buildAccountWarning(auth, [sheetsService.DEFAULT_ACCOUNT]),
+  ]);
+  return reply(client, event, `💰 已記帳 ${entries.length} 筆(共 $${total}・${sheetsService.DEFAULT_ACCOUNT})\n${detail}${budgetWarning}${accountWarning}`);
 }
 
 async function handleDeleteLastExpense(event, client) {
@@ -729,10 +747,20 @@ const HELP_SECTIONS = [
     rows: [
       { left: '記帳指定', right: '午餐120 信用卡' },
       { left: '轉帳', right: '我從錢袋拿1000放現金' },
-      { left: '查餘額', right: '帳戶餘額(所有帳戶+淨資產)' },
+      { left: '查餘額', right: '帳戶餘額(所有帳戶+淨資產,餘額變負會自動提醒)' },
+      { left: '異動明細', right: '現金明細 / 查轉帳' },
       { left: '新增帳戶', right: '新增帳戶 錢包 500' },
       { left: '移除帳戶', right: '移除帳戶 錢包' },
-      { left: '校正餘額', right: '設定帳戶 現金 500' },
+      { left: '校正餘額', right: '設定帳戶 現金 500 / 現金是500' },
+      { left: '設定目標', right: '設定目標 存款 50000' },
+      { left: '教分類', right: '星巴克算學習工作' },
+    ],
+  },
+  {
+    heading: '🌤 天氣',
+    rows: [
+      { left: '今天', right: '今天天氣' },
+      { left: '一週', right: '這週天氣' },
     ],
   },
   {
@@ -746,11 +774,8 @@ const HELP_SECTIONS = [
     ],
   },
   {
-    heading: '🌤 其他',
-    rows: [
-      { left: '天氣', right: '今天天氣' },
-      { left: '總覽', right: '今天狀況(天氣+行程)' },
-    ],
+    heading: '📌 其他',
+    rows: [{ left: '總覽', right: '今天狀況(天氣+行程)' }],
   },
 ];
 
@@ -874,7 +899,8 @@ async function handleTransfer(event, client, parsed) {
   }
 
   await sheetsService.addTransfer(auth, { from, to, amount: parsed.amount });
-  return reply(client, event, `🔄 已轉帳\n${from} → ${to}:$${parsed.amount.toLocaleString()}`);
+  const warning = await buildAccountWarning(auth, [from]);
+  return reply(client, event, `🔄 已轉帳\n${from} → ${to}:$${parsed.amount.toLocaleString()}${warning}`);
 }
 
 // ── 帳戶管理:新增 / 移除 / 校正餘額 / 查全部 ──
@@ -913,6 +939,12 @@ async function handleSetAccountBalance(event, client, parsed) {
   return reply(client, event, `✅ 已校正「${finalName}」餘額為 $${parsed.balance.toLocaleString()}`);
 }
 
+function formatAccountRow(b) {
+  if (!b.goal) return { left: b.name, right: `$${b.balance.toLocaleString()}`, bold: true };
+  const pct = Math.min(100, Math.round((b.balance / b.goal) * 100));
+  return { left: b.name, right: `$${b.balance.toLocaleString()} / $${b.goal.toLocaleString()}(${pct}%)`, bold: true };
+}
+
 async function handleAccountBalances(event, client) {
   const auth = authorize();
   const balances = await sheetsService.getAllAccountBalances(auth);
@@ -926,8 +958,95 @@ async function handleAccountBalances(event, client) {
     title: '🏦 帳戶餘額',
     subtitle: '目前餘額',
     hero: { value: `$${total.toLocaleString()}`, label: '淨資產・所有帳戶加總' },
-    sections: [{ rows: balances.map((b) => ({ left: b.name, right: `$${b.balance.toLocaleString()}`, bold: true })) }],
-    footerText: '新增/移除帳戶:「新增帳戶 X」「移除帳戶 X」;校正餘額:「設定帳戶 X 金額」',
+    sections: [{ rows: balances.map(formatAccountRow) }],
+    footerText: '新增/移除帳戶:「新增帳戶 X」「移除帳戶 X」;校正餘額:「設定帳戶 X 金額」;目標:「設定目標 X 金額」',
+  });
+  return replyCard(client, event, card);
+}
+
+// ── 存款目標之類的帳戶目標 ──
+async function handleSetAccountGoal(event, client, parsed) {
+  const auth = authorize();
+  const resolved = await sheetsService.resolveAccountName(auth, parsed.name);
+  if (!resolved) {
+    const accounts = await sheetsService.getAccounts(auth);
+    const names = accounts.map((a) => a.name).join('、') || '(還沒有任何帳戶)';
+    return reply(client, event, `🤔 找不到帳戶「${parsed.name}」\n目前的帳戶:${names}`);
+  }
+  await sheetsService.setAccountGoal(auth, resolved, parsed.goal);
+  return reply(client, event, `✅ 已設定「${resolved}」目標為 $${parsed.goal.toLocaleString()}`);
+}
+
+// ── 帳戶異動明細 ──
+async function handleAccountLedger(event, client, parsed) {
+  const auth = authorize();
+  const resolved = await sheetsService.resolveAccountName(auth, parsed.accountText);
+  if (!resolved) {
+    const accounts = await sheetsService.getAccounts(auth);
+    const names = accounts.map((a) => a.name).join('、') || '(還沒有任何帳戶)';
+    return reply(client, event, `🤔 找不到帳戶「${parsed.accountText}」\n目前的帳戶:${names}`);
+  }
+
+  const entries = await sheetsService.getAccountLedger(auth, resolved, 15);
+  const card = buildListCard({
+    title: `📋 ${resolved}明細`,
+    subtitle: '最近異動',
+    sections: [
+      {
+        rows: entries.map((e) => ({
+          left: formatDateShort(e.date),
+          right: `${e.desc} ${e.amount >= 0 ? '+' : ''}$${e.amount.toLocaleString()}`,
+          bold: e.amount < 0,
+        })),
+        emptyText: '還沒有任何異動紀錄',
+      },
+    ],
+  });
+  return replyCard(client, event, card);
+}
+
+// ── 轉帳紀錄(不限帳戶)──
+async function handleTransferHistory(event, client) {
+  const auth = authorize();
+  const transfers = await sheetsService.getRecentTransfers(auth, 15);
+
+  if (!transfers.length) {
+    return reply(client, event, '🤔 還沒有任何轉帳紀錄');
+  }
+
+  const card = buildListCard({
+    title: '🔄 轉帳紀錄',
+    subtitle: '最近 15 筆',
+    sections: [
+      {
+        rows: transfers.map((t) => ({ left: formatDateShort(t.date), right: `${t.from} → ${t.to}:$${t.amount.toLocaleString()}` })),
+      },
+    ],
+  });
+  return replyCard(client, event, card);
+}
+
+// ── 教分類關鍵字 ──
+async function handleTeachCategory(event, client, parsed) {
+  const auth = authorize();
+  const customRules = await sheetsService.getCustomCategoryRules(auth);
+  const category = classify(parsed.categoryText, customRules);
+  await sheetsService.addCustomCategoryRule(auth, parsed.keyword, category);
+  return reply(client, event, `✅ 已記住:「${parsed.keyword}」以後都算「${category}」`);
+}
+
+// ── 一週天氣 ──
+async function handleWeeklyWeather(event, client) {
+  const { location, days } = await getWeeklyWeather();
+  const card = buildListCard({
+    title: `📅 ${location} 一週天氣`,
+    subtitle: '未來 7 天預報',
+    sections: [
+      {
+        rows: days.map((d) => ({ left: formatDateShort(d.date), right: `${d.description}・${d.minTemp}-${d.maxTemp}°C` })),
+      },
+    ],
+    footerText: '超過 36 小時的預報沒有降雨機率資料,只顯示天氣現象跟氣溫',
   });
   return replyCard(client, event, card);
 }
@@ -957,8 +1076,9 @@ async function handleAddAllocation(event, client, parsed) {
     parsed.savings.forEach((s) => lines.push(`・${s.item} $${s.amount}`));
   }
 
-  const warning = parsed.expenses.length ? await buildBudgetWarning(auth, parsed.expenses) : '';
-  return reply(client, event, lines.join('\n') + warning);
+  const budgetWarning = parsed.expenses.length ? await buildBudgetWarning(auth, parsed.expenses) : '';
+  const accountWarning = parsed.expenses.length || parsed.savings.length ? await buildAccountWarning(auth, [sheetsService.DEFAULT_ACCOUNT]) : '';
+  return reply(client, event, lines.join('\n') + budgetWarning + accountWarning);
 }
 
 async function handleTextMessage(event, client) {
@@ -1009,6 +1129,11 @@ async function handleTextMessage(event, client) {
     remove_account: handleRemoveAccount,
     set_account_balance: handleSetAccountBalance,
     query_accounts: handleAccountBalances,
+    set_account_goal: handleSetAccountGoal,
+    account_ledger: handleAccountLedger,
+    query_transfers: handleTransferHistory,
+    teach_category: handleTeachCategory,
+    query_weekly_weather: handleWeeklyWeather,
     query_budget: handleBudgetStatus,
     set_budget: handleSetBudget,
     query_savings: handleSavingsQuery,

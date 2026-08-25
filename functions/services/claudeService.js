@@ -27,6 +27,11 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "remove_account": 想移除一個帳戶(例如「移除帳戶 錢包」)
 - "set_account_balance": 想校正某個帳戶目前的餘額(例如「設定帳戶 現金 500」)
 - "query_accounts": 想看所有帳戶餘額/淨資產
+- "set_account_goal": 想設定某個帳戶的目標金額(例如「設定目標 存款 50000」)
+- "account_ledger": 想看某個帳戶最近的異動明細(例如「現金明細」)
+- "query_transfers": 想看轉帳紀錄(不限帳戶)
+- "teach_category": 想教機器人把某個關鍵字歸到某個分類(例如「星巴克算學習工作」)
+- "query_weekly_weather": 在問這週/未來幾天的天氣
 - "add_allocation": 薪水入帳後一次分配到多個項目,同時有支出跟存款(例如「薪水32000 扣3000房租 扣5000存款」)
 - "add_note": 想記一則不綁時間的筆記/備忘
 - "query_notes": 想看目前的待辦筆記
@@ -42,7 +47,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "title": "add_event:行程標題,簡潔、去除時間詞",
   "startTime": "add_event:ISO 8601 時間字串,含時區",
   "endTime": "add_event:ISO 8601 時間字串",
-  "keyword": "delete_event / search_event / search_note / search_expense:要比對的關鍵字",
+  "keyword": "delete_event / search_event / search_note / search_expense:要比對的關鍵字。teach_category:要教的關鍵字",
   "dateOffset": "query_schedule / delete_event:整數,0=今天,1=明天,以此類推",
   "period": "query_schedule:all / morning / afternoon / evening",
   "specificTime": "query_schedule 問特定時間點時:ISO 8601 時間字串,否則 null",
@@ -50,14 +55,15 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "days": "query_week:通常填 7",
   "item": "add_expense:支出品項,如果使用者有額外備註/說明,用「品項・備註」的格式合併成一個字串",
   "amount": "add_expense / set_budget / transfer / add_account / set_account_balance:金額,純數字。update_last_expense:新金額,沒提到要改金額就填 null",
-  "accountText": "add_expense:使用者指定的帳戶文字,沒提到就填 null,不用是精確帳戶名稱",
+  "accountText": "add_expense:使用者指定的帳戶文字,沒提到就填 null,不用是精確帳戶名稱。account_ledger:要查詢明細的帳戶文字",
   "note": "update_last_expense:要加上的備註文字,沒提到就填 null",
-  "categoryText": "set_budget:分類文字(不用是精確分類名稱,系統會自動正規化)",
+  "categoryText": "set_budget / teach_category:分類文字(不用是精確分類名稱,系統會自動正規化)",
   "fromText": "transfer:轉出帳戶文字",
   "toText": "transfer:轉入帳戶文字",
-  "name": "add_account / remove_account / set_account_balance:帳戶名稱",
+  "name": "add_account / remove_account / set_account_balance / set_account_goal:帳戶名稱",
   "startBalance": "add_account:起始餘額,沒提到就填 0",
   "balance": "set_account_balance:要校正成的餘額",
+  "goal": "set_account_goal:目標金額",
   "startDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD",
   "endDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD,單日查詢就跟 startDate 相同",
   "expenses": "add_allocation:支出項目陣列,每個是 {item, amount}",
@@ -241,6 +247,38 @@ async function parseWithClaude(text) {
 
   if (parsed.intent === 'query_accounts') {
     return { intent: 'query_accounts' };
+  }
+
+  if (parsed.intent === 'set_account_goal') {
+    const goal = Number(parsed.goal);
+    if (!parsed.name || !Number.isFinite(goal) || goal < 0) {
+      return { intent: 'chitchat', reason: '沒有辨識出帳戶名稱或目標金額' };
+    }
+    return { intent: 'set_account_goal', name: String(parsed.name).slice(0, 20), goal };
+  }
+
+  if (parsed.intent === 'account_ledger') {
+    if (!parsed.accountText) return { intent: 'chitchat', reason: '沒有辨識出要查詢的帳戶' };
+    return { intent: 'account_ledger', accountText: String(parsed.accountText).slice(0, 20) };
+  }
+
+  if (parsed.intent === 'query_transfers') {
+    return { intent: 'query_transfers' };
+  }
+
+  if (parsed.intent === 'teach_category') {
+    if (!parsed.keyword || !parsed.categoryText) {
+      return { intent: 'chitchat', reason: '沒有辨識出關鍵字或分類' };
+    }
+    return {
+      intent: 'teach_category',
+      keyword: String(parsed.keyword).slice(0, 20),
+      categoryText: String(parsed.categoryText).slice(0, 20),
+    };
+  }
+
+  if (parsed.intent === 'query_weekly_weather') {
+    return { intent: 'query_weekly_weather' };
   }
 
   if (parsed.intent === 'delete_last_expense') {
