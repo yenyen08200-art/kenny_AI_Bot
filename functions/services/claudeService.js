@@ -13,7 +13,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "query_overview": 想一次看今天的天氣加行程總覽
 - "query_free_slots": 在問哪些時段有空(例如「這週哪天有空」)
 - "help": 想知道這個機器人能做什麼
-- "add_expense": 想記一筆支出(有品項與金額)
+- "add_expense": 想記一筆支出(有品項與金額,可能有指定帳戶,例如「午餐120 信用卡」)
 - "update_last_expense": 想修改最後一筆記帳的金額和/或加上備註(例如「把剛剛午餐的金額改成70,備註全家涼麵」)
 - "delete_last_expense": 想刪除最後一筆記帳
 - "query_expense": 在問這個月/上個月/某月花了多少錢
@@ -21,7 +21,12 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "query_budget": 在問還剩多少預算/錢可以花
 - "set_budget": 想設定/修改某個分類的月預算(例如「設定預算 房租 3000」)
 - "query_savings": 在問這個月存了多少錢
-- "reconcile": 想看整合的財務總覽/對帳(支出+分類+預算+存款)
+- "reconcile": 想看整合的財務總覽/對帳(支出+分類+預算+帳戶餘額)
+- "transfer": 想把錢從一個帳戶搬到另一個帳戶(例如「從錢袋拿1000放現金」),不是花掉也不是收入
+- "add_account": 想新增一個帳戶(例如「新增帳戶 錢包 500」)
+- "remove_account": 想移除一個帳戶(例如「移除帳戶 錢包」)
+- "set_account_balance": 想校正某個帳戶目前的餘額(例如「設定帳戶 現金 500」)
+- "query_accounts": 想看所有帳戶餘額/淨資產
 - "add_allocation": 薪水入帳後一次分配到多個項目,同時有支出跟存款(例如「薪水32000 扣3000房租 扣5000存款」)
 - "add_note": 想記一則不綁時間的筆記/備忘
 - "query_notes": 想看目前的待辦筆記
@@ -44,9 +49,15 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "dayOffset": "query_week:0=這週,7=下週",
   "days": "query_week:通常填 7",
   "item": "add_expense:支出品項,如果使用者有額外備註/說明,用「品項・備註」的格式合併成一個字串",
-  "amount": "add_expense / set_budget:金額,純數字。update_last_expense:新金額,沒提到要改金額就填 null",
+  "amount": "add_expense / set_budget / transfer / add_account / set_account_balance:金額,純數字。update_last_expense:新金額,沒提到要改金額就填 null",
+  "accountText": "add_expense:使用者指定的帳戶文字,沒提到就填 null,不用是精確帳戶名稱",
   "note": "update_last_expense:要加上的備註文字,沒提到就填 null",
   "categoryText": "set_budget:分類文字(不用是精確分類名稱,系統會自動正規化)",
+  "fromText": "transfer:轉出帳戶文字",
+  "toText": "transfer:轉入帳戶文字",
+  "name": "add_account / remove_account / set_account_balance:帳戶名稱",
+  "startBalance": "add_account:起始餘額,沒提到就填 0",
+  "balance": "set_account_balance:要校正成的餘額",
   "startDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD",
   "endDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD,單日查詢就跟 startDate 相同",
   "expenses": "add_allocation:支出項目陣列,每個是 {item, amount}",
@@ -188,7 +199,48 @@ async function parseWithClaude(text) {
     if (!parsed.item || !Number.isFinite(amount) || amount <= 0) {
       return { intent: 'chitchat', reason: '沒有辨識出品項或金額' };
     }
-    return { intent: 'add_expense', item: String(parsed.item).slice(0, 50), amount };
+    return {
+      intent: 'add_expense',
+      item: String(parsed.item).slice(0, 50),
+      amount,
+      accountText: parsed.accountText ? String(parsed.accountText).slice(0, 20) : null,
+    };
+  }
+
+  if (parsed.intent === 'transfer') {
+    const amount = Number(parsed.amount);
+    if (!parsed.fromText || !parsed.toText || !Number.isFinite(amount) || amount <= 0) {
+      return { intent: 'chitchat', reason: '沒有辨識出轉帳的來源/目的帳戶或金額' };
+    }
+    return {
+      intent: 'transfer',
+      fromText: String(parsed.fromText).slice(0, 20),
+      toText: String(parsed.toText).slice(0, 20),
+      amount,
+    };
+  }
+
+  if (parsed.intent === 'add_account') {
+    if (!parsed.name) return { intent: 'chitchat', reason: '沒有辨識出帳戶名稱' };
+    const startBalance = Number(parsed.startBalance) || 0;
+    return { intent: 'add_account', name: String(parsed.name).slice(0, 20), startBalance };
+  }
+
+  if (parsed.intent === 'remove_account') {
+    if (!parsed.name) return { intent: 'chitchat', reason: '沒有辨識出帳戶名稱' };
+    return { intent: 'remove_account', name: String(parsed.name).slice(0, 20) };
+  }
+
+  if (parsed.intent === 'set_account_balance') {
+    const balance = Number(parsed.balance);
+    if (!parsed.name || !Number.isFinite(balance)) {
+      return { intent: 'chitchat', reason: '沒有辨識出帳戶名稱或餘額' };
+    }
+    return { intent: 'set_account_balance', name: String(parsed.name).slice(0, 20), balance };
+  }
+
+  if (parsed.intent === 'query_accounts') {
+    return { intent: 'query_accounts' };
   }
 
   if (parsed.intent === 'delete_last_expense') {

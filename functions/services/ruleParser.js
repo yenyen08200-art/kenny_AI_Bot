@@ -335,6 +335,51 @@ function tryParseAllocation(text) {
   return { intent: 'add_allocation', expenses, savings };
 }
 
+// ── 帳戶 / 轉帳 ──
+
+// 轉帳:「我從錢袋拿1000放現金」「從錢袋轉1000到現金」「錢袋轉帳1000給現金」
+// fromText/toText 是不是真的帳戶名稱,交給 handler 用當下的帳戶清單驗證
+function tryParseTransfer(text) {
+  const m = text.match(
+    /^(?:我)?(?:從)?(.{1,10}?)(?:拿|轉帳|轉|挪)\s*(\d{1,7})\s*(?:元|塊)?(?:放到|放|轉到|存到|轉入|給|到)\s*(.{1,10})$/
+  );
+  if (!m) return null;
+  const fromText = m[1].trim();
+  const amount = Number(m[2]);
+  const toText = m[3].trim();
+  if (!fromText || !toText || !amount) return null;
+  return { intent: 'transfer', fromText, toText, amount };
+}
+
+// 新增帳戶:「新增帳戶 錢包」「新增帳戶 錢包 500」(500 是起始餘額,不寫就是 0)
+function tryParseAddAccount(text) {
+  const m = text.match(/^(?:新增|建立)帳戶\s*(.{1,10}?)(?:\s+(\d{1,9}))?$/);
+  if (!m || !m[1].trim()) return null;
+  return { intent: 'add_account', name: m[1].trim(), startBalance: m[2] ? Number(m[2]) : 0 };
+}
+
+// 移除帳戶:「移除帳戶 錢包」「刪除帳戶 錢包」
+function tryParseRemoveAccount(text) {
+  const m = text.match(/^(?:移除|刪除|刪掉)帳戶\s*(.{1,10})$/);
+  if (!m || !m[1].trim()) return null;
+  return { intent: 'remove_account', name: m[1].trim() };
+}
+
+// 校正帳戶餘額(跟現實金額對不上時強制同步):「設定帳戶 現金 500」
+function tryParseSetAccountBalance(text) {
+  const m = text.match(/^設定帳戶\s*(.{1,10}?)\s*(\d{1,9})$/);
+  if (!m) return null;
+  return { intent: 'set_account_balance', name: m[1].trim(), balance: Number(m[2]) };
+}
+
+// 查所有帳戶餘額:「帳戶餘額」「查帳戶」
+function tryParseAccountBalanceQuery(text) {
+  if (/^(帳戶餘額|查帳戶|帳戶查詢|所有帳戶|淨資產)$/.test(text)) {
+    return { intent: 'query_accounts' };
+  }
+  return null;
+}
+
 // 刪除/修正最後一筆記帳
 function tryParseExpenseFix(text) {
   if (/^(?:刪掉|刪除|取消)\s*(?:剛剛|剛才|最後|上)(?:那|一)?筆/.test(text)) {
@@ -371,27 +416,34 @@ function tryParseMultiExpense(text) {
 // 備註子句:「... 備註正宗排骨飯」放在品項後面,補充是花在哪(方便之後用「找記帳」查回來)
 const NOTE_CLAUSE = '(?:\\s*(?:備註|備注|註記)\\s*[::]?\\s*(.{1,50}))?';
 
+// 帳戶子句:「... 現金」放在金額後面(備註之前),是不是真的帳戶名稱交給 handler
+// 用當下的帳戶清單驗證,ruleParser 這裡只負責抓出候選文字,維持同步、不查表
+const ACCOUNT_CLAUSE = '(?:\\s+([^\\s,、]{1,6}))?';
+
 function withNote(item, note) {
   const cleanItem = item.trim().slice(0, 50);
   const cleanNote = note ? note.trim().slice(0, 50) : '';
   return cleanNote ? `${cleanItem}・${cleanNote}` : cleanItem;
 }
 
-// 明確寫法:「記帳 午餐 120」,可加「備註」補充細節
+// 明確寫法:「記帳 午餐 120」,可加帳戶跟「備註」補充細節:「記帳 午餐 120 現金 備註全家涼麵」
 function tryParseExpenseExplicit(text) {
-  const m = text.match(new RegExp(`^(?:記帳|花費|支出)\\s*[::]?\\s*(.+?)\\s*(\\d{1,7})\\s*(?:元|塊)?${NOTE_CLAUSE}$`));
+  const m = text.match(
+    new RegExp(`^(?:記帳|花費|支出)\\s*[::]?\\s*(.+?)\\s*(\\d{1,7})\\s*(?:元|塊)?${ACCOUNT_CLAUSE}${NOTE_CLAUSE}$`)
+  );
   if (!m) return null;
-  return { intent: 'add_expense', item: withNote(m[1], m[3]), amount: Number(m[2]) };
+  return { intent: 'add_expense', item: withNote(m[1], m[4]), amount: Number(m[2]), accountText: m[3] || null };
 }
 
-// 簡短寫法:「午餐 120」— 放在最後判斷,並排除看起來像時間/行程的句子,可加「備註」補充細節
+// 簡短寫法:「午餐 120」— 放在最後判斷,並排除看起來像時間/行程的句子
+// 可加帳戶跟「備註」補充細節:「午餐120 現金 備註全家涼麵」,不寫帳戶就交給 handler 預設現金
 function tryParseExpenseImplicit(text) {
   if (NOT_EXPENSE_HINTS.test(text)) return null;
-  const m = text.match(new RegExp(`^(.{1,12}?)\\s*(\\d{1,7})\\s*(?:元|塊)?${NOTE_CLAUSE}$`));
+  const m = text.match(new RegExp(`^(.{1,12}?)\\s*(\\d{1,7})\\s*(?:元|塊)?${ACCOUNT_CLAUSE}${NOTE_CLAUSE}$`));
   if (!m) return null;
   const item = m[1].trim();
   if (!item) return null;
-  return { intent: 'add_expense', item: withNote(item, m[3]), amount: Number(m[2]) };
+  return { intent: 'add_expense', item: withNote(item, m[4]), amount: Number(m[2]), accountText: m[3] || null };
 }
 
 // ── 指令說明 ──
@@ -614,6 +666,11 @@ function parseWithRules(text) {
     tryParseSavingsQuery(trimmed) ||
     tryParseReconcile(trimmed) ||
     tryParseSetBudget(trimmed) ||
+    tryParseAddAccount(trimmed) ||
+    tryParseRemoveAccount(trimmed) ||
+    tryParseSetAccountBalance(trimmed) ||
+    tryParseAccountBalanceQuery(trimmed) ||
+    tryParseTransfer(trimmed) ||
     tryParseAllocation(trimmed) ||
     tryParseExpenseCompare(trimmed) ||
     tryParseExpenseDateQuery(trimmed, now) ||

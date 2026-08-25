@@ -488,20 +488,31 @@ async function buildBudgetWarning(auth, items) {
   );
 }
 
+// 把「品項後面那個候選帳戶詞」對應到真正的帳戶;對不到的話,不要憑空吃掉使用者打的字,
+// 直接併回品項裡,帳戶預設現金
+async function resolveExpenseAccount(auth, item, accountText) {
+  if (!accountText) return { item, account: sheetsService.DEFAULT_ACCOUNT };
+  const resolved = await sheetsService.resolveAccountName(auth, accountText);
+  if (resolved) return { item, account: resolved };
+  return { item: `${item} ${accountText}`, account: sheetsService.DEFAULT_ACCOUNT };
+}
+
 async function handleAddExpense(event, client, parsed) {
   const auth = authorize();
-  await sheetsService.addExpense(auth, { item: parsed.item, amount: parsed.amount });
-  const warning = await buildBudgetWarning(auth, [{ item: parsed.item }]);
-  return reply(client, event, `💰 已記帳\n${parsed.item} $${parsed.amount}${warning}`);
+  const { item, account } = await resolveExpenseAccount(auth, parsed.item, parsed.accountText);
+  await sheetsService.addExpense(auth, { item, amount: parsed.amount, account });
+  const warning = await buildBudgetWarning(auth, [{ item }]);
+  return reply(client, event, `💰 已記帳(${account})\n${item} $${parsed.amount}${warning}`);
 }
 
 async function handleAddExpenses(event, client, parsed) {
   const auth = authorize();
-  await sheetsService.addExpenses(auth, parsed.entries);
-  const total = parsed.entries.reduce((s, e) => s + e.amount, 0);
-  const detail = parsed.entries.map((e) => `・${e.item} $${e.amount}`).join('\n');
-  const warning = await buildBudgetWarning(auth, parsed.entries);
-  return reply(client, event, `💰 已記帳 ${parsed.entries.length} 筆(共 $${total})\n${detail}${warning}`);
+  const entries = parsed.entries.map((e) => ({ ...e, account: sheetsService.DEFAULT_ACCOUNT }));
+  await sheetsService.addExpenses(auth, entries);
+  const total = entries.reduce((s, e) => s + e.amount, 0);
+  const detail = entries.map((e) => `・${e.item} $${e.amount}`).join('\n');
+  const warning = await buildBudgetWarning(auth, entries);
+  return reply(client, event, `💰 已記帳 ${entries.length} 筆(共 $${total}・${sheetsService.DEFAULT_ACCOUNT})\n${detail}${warning}`);
 }
 
 async function handleDeleteLastExpense(event, client) {
@@ -639,14 +650,22 @@ async function handleExpenseCompare(event, client) {
 // ── 對帳:把支出、分類佔比、預算狀態、存款整合成一張卡片 ──
 async function handleReconcile(event, client) {
   const auth = authorize();
-  const [expense, byCategory, budgetStatus, savings] = await Promise.all([
+  const [expense, byCategory, budgetStatus, balances] = await Promise.all([
     sheetsService.getMonthlyExpense(auth),
     sheetsService.getMonthlyExpenseByCategory(auth),
     sheetsService.getBudgetStatus(auth),
-    sheetsService.getMonthlySavings(auth),
+    sheetsService.getAllAccountBalances(auth),
   ]);
 
+  const netWorth = balances.reduce((s, b) => s + b.balance, 0);
+
   const sections = [];
+  if (balances.length) {
+    sections.push({
+      heading: '🏦 帳戶餘額',
+      rows: balances.map((b) => ({ left: b.name, right: `$${b.balance.toLocaleString()}`, bold: true })),
+    });
+  }
   if (budgetStatus.items.length) {
     sections.push({
       heading: '💰 預算狀態',
@@ -657,20 +676,15 @@ async function handleReconcile(event, client) {
       })),
     });
   }
-  sections.push({
-    heading: '🏦 本月存款',
-    rows: savings.count ? [{ left: `累計存入・${savings.count} 筆`, right: `$${savings.total.toLocaleString()}`, bold: true }] : [],
-    emptyText: '這個月還沒有存款紀錄',
-  });
 
   const card = buildListCard({
     title: '🧾 財務對帳',
-    subtitle: `${expense.yearMonth}・本月支出總覽`,
+    subtitle: `${expense.yearMonth}・淨資產 $${netWorth.toLocaleString()}`,
     accent: budgetStatus.totalRemaining < 0 ? COLOR.rainHigh : COLOR.rainLow,
     hero: { value: `$${expense.total.toLocaleString()}`, label: `本月支出・${expense.count} 筆` },
     imageUrl: buildCategoryPieChartUrl(byCategory),
     sections,
-    footerText: '不含帳戶餘額/收入,只彙整支出、預算、存款三種資料',
+    footerText: '淨資產 = 所有帳戶餘額加總(不含收入,收入不追蹤)',
   });
 
   return replyCard(client, event, card);
@@ -693,7 +707,7 @@ const HELP_SECTIONS = [
   {
     heading: '💰 記帳',
     rows: [
-      { left: '記一筆', right: '午餐 120' },
+      { left: '記一筆', right: '午餐 120(預設現金)/ 午餐120 信用卡(指定帳戶)' },
       { left: '加備註', right: '晚餐100 備註正宗排骨飯(之後可以搜尋到)' },
       { left: '記多筆', right: '早餐50 午餐120 晚餐200' },
       { left: '刪除', right: '刪掉剛剛那筆' },
@@ -706,9 +720,19 @@ const HELP_SECTIONS = [
       { left: '搜尋', right: '找記帳 隨身碟' },
       { left: '設定預算', right: '設定預算 房租 3000' },
       { left: '剩餘預算', right: '剩餘預算' },
-      { left: '存款分配', right: '薪水32000 扣3000房租 扣5000存款' },
-      { left: '存款統計', right: '本月存了多少' },
-      { left: '對帳', right: '對帳(支出+分類+預算+存款整合一張卡片)' },
+      { left: '薪水分配', right: '薪水32000 扣3000房租 扣5000存款' },
+      { left: '對帳', right: '對帳(支出+分類+預算+帳戶餘額整合一張卡片)' },
+    ],
+  },
+  {
+    heading: '🏦 帳戶',
+    rows: [
+      { left: '記帳指定', right: '午餐120 信用卡' },
+      { left: '轉帳', right: '我從錢袋拿1000放現金' },
+      { left: '查餘額', right: '帳戶餘額(所有帳戶+淨資產)' },
+      { left: '新增帳戶', right: '新增帳戶 錢包 500' },
+      { left: '移除帳戶', right: '移除帳戶 錢包' },
+      { left: '校正餘額', right: '設定帳戶 現金 500' },
     ],
   },
   {
@@ -823,47 +847,103 @@ async function handleSetBudget(event, client, parsed) {
   return reply(client, event, `✅ 已設定「${category}」本月預算為 $${parsed.amount.toLocaleString()}`);
 }
 
-// ── 存款(不算支出)──
+// ── 存款(現在是「存款」這個帳戶的餘額,不是月結流水)──
 async function handleSavingsQuery(event, client) {
   const auth = authorize();
-  const summary = await sheetsService.getMonthlySavings(auth);
+  const balances = await sheetsService.getAllAccountBalances(auth);
+  const savings = balances.find((b) => b.name === '存款');
 
-  if (!summary.count) {
-    return reply(client, event, `💰 ${summary.yearMonth} 還沒有任何存款紀錄`);
+  if (!savings) {
+    return reply(client, event, '🤔 還沒有「存款」這個帳戶,傳「新增帳戶 存款」開始追蹤');
   }
-  return replyCard(
-    client,
-    event,
-    buildListCard({
-      title: `💰 ${summary.yearMonth} 存款統計`,
-      subtitle: `${summary.count} 筆紀錄`,
-      hero: { value: `$${summary.total.toLocaleString()}`, label: `${summary.yearMonth} 總存款・${summary.count} 筆` },
-      sections: [
-        {
-          heading: '存款明細',
-          rows: summary.topItems.map(([item, amount]) => ({ left: item, right: `$${amount.toLocaleString()}`, bold: true })),
-        },
-      ],
-      footerText: '存款不算進「這個月花多少」的支出統計',
-    })
-  );
+  return reply(client, event, `🏦 存款帳戶目前餘額:$${savings.balance.toLocaleString()}`);
+}
+
+// ── 轉帳:在自己的帳戶之間搬錢,不算支出也不算收入 ──
+async function handleTransfer(event, client, parsed) {
+  const auth = authorize();
+  const [from, to] = await Promise.all([
+    sheetsService.resolveAccountName(auth, parsed.fromText),
+    sheetsService.resolveAccountName(auth, parsed.toText),
+  ]);
+
+  if (!from || !to) {
+    const accounts = await sheetsService.getAccounts(auth);
+    const names = accounts.map((a) => a.name).join('、') || '(還沒有任何帳戶)';
+    return reply(client, event, `🤔 找不到「${!from ? parsed.fromText : parsed.toText}」這個帳戶\n目前的帳戶:${names}`);
+  }
+
+  await sheetsService.addTransfer(auth, { from, to, amount: parsed.amount });
+  return reply(client, event, `🔄 已轉帳\n${from} → ${to}:$${parsed.amount.toLocaleString()}`);
+}
+
+// ── 帳戶管理:新增 / 移除 / 校正餘額 / 查全部 ──
+async function handleAddAccount(event, client, parsed) {
+  const auth = authorize();
+  try {
+    await sheetsService.addAccount(auth, parsed.name, parsed.startBalance);
+  } catch (err) {
+    return reply(client, event, `🤔 ${err.message}`);
+  }
+  return reply(client, event, `✅ 已新增帳戶「${parsed.name}」,起始餘額 $${parsed.startBalance.toLocaleString()}`);
+}
+
+async function handleRemoveAccount(event, client, parsed) {
+  const auth = authorize();
+  const resolved = await sheetsService.resolveAccountName(auth, parsed.name);
+  if (!resolved) return reply(client, event, `🤔 找不到帳戶「${parsed.name}」`);
+  await sheetsService.removeAccount(auth, resolved);
+  return reply(client, event, `🗑 已移除帳戶「${resolved}」(過去的記帳/轉帳紀錄不會被刪除)`);
+}
+
+async function handleSetAccountBalance(event, client, parsed) {
+  const auth = authorize();
+  const resolved = (await sheetsService.resolveAccountName(auth, parsed.name)) || parsed.name;
+  await sheetsService.setAccountBaseline(auth, resolved, parsed.balance);
+  return reply(client, event, `✅ 已校正「${resolved}」餘額為 $${parsed.balance.toLocaleString()}`);
+}
+
+async function handleAccountBalances(event, client) {
+  const auth = authorize();
+  const balances = await sheetsService.getAllAccountBalances(auth);
+
+  if (!balances.length) {
+    return reply(client, event, '🤔 還沒有任何帳戶,傳「新增帳戶 現金 500」開始追蹤');
+  }
+
+  const total = balances.reduce((s, b) => s + b.balance, 0);
+  const card = buildListCard({
+    title: '🏦 帳戶餘額',
+    subtitle: '目前餘額',
+    hero: { value: `$${total.toLocaleString()}`, label: '淨資產・所有帳戶加總' },
+    sections: [{ rows: balances.map((b) => ({ left: b.name, right: `$${b.balance.toLocaleString()}`, bold: true })) }],
+    footerText: '新增/移除帳戶:「新增帳戶 X」「移除帳戶 X」;校正餘額:「設定帳戶 X 金額」',
+  });
+  return replyCard(client, event, card);
 }
 
 // ── 薪水入帳一次分配到多個項目(支出 + 存款)──
 async function handleAddAllocation(event, client, parsed) {
   const auth = authorize();
   const tasks = [];
-  if (parsed.expenses.length) tasks.push(sheetsService.addExpenses(auth, parsed.expenses));
-  if (parsed.savings.length) tasks.push(sheetsService.addSavings(auth, parsed.savings));
+  if (parsed.expenses.length) {
+    const entries = parsed.expenses.map((e) => ({ ...e, account: sheetsService.DEFAULT_ACCOUNT }));
+    tasks.push(sheetsService.addExpenses(auth, entries));
+  }
+  if (parsed.savings.length) {
+    for (const s of parsed.savings) {
+      tasks.push(sheetsService.addTransfer(auth, { from: sheetsService.DEFAULT_ACCOUNT, to: '存款', amount: s.amount, note: s.item }));
+    }
+  }
   await Promise.all(tasks);
 
   const lines = ['💰 已記錄薪水分配'];
   if (parsed.expenses.length) {
-    lines.push('', '支出:');
+    lines.push('', `支出(${sheetsService.DEFAULT_ACCOUNT}):`);
     parsed.expenses.forEach((e) => lines.push(`・${e.item} $${e.amount}`));
   }
   if (parsed.savings.length) {
-    lines.push('', '存款(不算進本月支出):');
+    lines.push('', `轉入存款(不算進本月支出):`);
     parsed.savings.forEach((s) => lines.push(`・${s.item} $${s.amount}`));
   }
 
@@ -914,6 +994,11 @@ async function handleTextMessage(event, client) {
     query_expense_range: handleExpenseRangeQuery,
     query_expense_compare: handleExpenseCompare,
     reconcile: handleReconcile,
+    transfer: handleTransfer,
+    add_account: handleAddAccount,
+    remove_account: handleRemoveAccount,
+    set_account_balance: handleSetAccountBalance,
+    query_accounts: handleAccountBalances,
     query_budget: handleBudgetStatus,
     set_budget: handleSetBudget,
     query_savings: handleSavingsQuery,

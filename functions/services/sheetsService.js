@@ -8,7 +8,9 @@ const { classify } = require('./expenseCategory');
 const EXPENSE_SHEET = '記帳';
 const NOTE_SHEET = '筆記';
 const BUDGET_SHEET = '預算';
-const SAVING_SHEET = '存款';
+const ACCOUNT_SHEET = '帳戶';
+const TRANSFER_SHEET = '轉帳';
+const DEFAULT_ACCOUNT = '現金';
 
 // 尚未跑過 setup-sheets.js 時,Secret 會是這個佔位值
 const NOT_CONFIGURED = 'NOT_SET';
@@ -44,7 +46,7 @@ async function appendRow(auth, sheetName, values) {
   const sheets = google.sheets({ version: 'v4', auth });
   await sheets.spreadsheets.values.append({
     spreadsheetId: getSpreadsheetId(),
-    range: `${sheetName}!A:D`,
+    range: `${sheetName}!A:F`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [values] },
   });
@@ -54,18 +56,18 @@ async function readRows(auth, sheetName) {
   const sheets = google.sheets({ version: 'v4', auth });
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: getSpreadsheetId(),
-    range: `${sheetName}!A2:D`, // 跳過標題列
+    range: `${sheetName}!A2:F`, // 跳過標題列;寬度夠涵蓋各工作表的欄位數
   });
   return res.data.values || [];
 }
 
 // ── 記帳 ──
 
-// 新增一筆支出,欄位為:日期 / 時間 / 品項 / 金額
-async function addExpense(auth, { item, amount }) {
+// 新增一筆支出,欄位為:日期 / 時間 / 品項 / 金額 / 帳戶(不指定就算現金)
+async function addExpense(auth, { item, amount, account = DEFAULT_ACCOUNT }) {
   const { date, time } = taipeiNowParts();
-  await appendRow(auth, EXPENSE_SHEET, [date, time, item, amount]);
-  return { date, item, amount };
+  await appendRow(auth, EXPENSE_SHEET, [date, time, item, amount, account]);
+  return { date, item, amount, account };
 }
 
 // 統計某個工作表某個月份(預設本月)的總額與筆數,記帳/存款共用
@@ -94,24 +96,6 @@ async function getMonthlyExpense(auth, yearMonth = null) {
   return getMonthlySum(auth, EXPENSE_SHEET, yearMonth);
 }
 
-// 統計某個月份(預設本月)存了多少(不算進支出統計)
-async function getMonthlySavings(auth, yearMonth = null) {
-  return getMonthlySum(auth, SAVING_SHEET, yearMonth);
-}
-
-// 記一筆存款(轉去存的錢,不是花掉,所以獨立一張表,不會混進支出統計)
-async function addSavings(auth, entries) {
-  const { date, time } = taipeiNowParts();
-  const sheets = google.sheets({ version: 'v4', auth });
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: getSpreadsheetId(),
-    range: `${SAVING_SHEET}!A:D`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: entries.map((e) => [date, time, e.item, e.amount]) },
-  });
-  return entries.map((e) => ({ date, ...e }));
-}
-
 // 依分類統計某個月份(預設本月)的支出,分類由 expenseCategory.js 用關鍵字自動判斷
 async function getMonthlyExpenseByCategory(auth, yearMonth = null) {
   const target = yearMonth || taipeiNowParts().yearMonth;
@@ -135,11 +119,11 @@ async function addExpenses(auth, entries) {
   const sheets = google.sheets({ version: 'v4', auth });
   await sheets.spreadsheets.values.append({
     spreadsheetId: getSpreadsheetId(),
-    range: `${EXPENSE_SHEET}!A:D`,
+    range: `${EXPENSE_SHEET}!A:E`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: entries.map((e) => [date, time, e.item, e.amount]) },
+    requestBody: { values: entries.map((e) => [date, time, e.item, e.amount, e.account || DEFAULT_ACCOUNT]) },
   });
-  return entries.map((e) => ({ date, ...e }));
+  return entries.map((e) => ({ date, account: e.account || DEFAULT_ACCOUNT, ...e }));
 }
 
 // 取得工作表的數字 id(刪除整列時必須用這個,不能用名稱)
@@ -297,6 +281,106 @@ async function getBudgetStatus(auth, yearMonth = null) {
   return { yearMonth: target, items, totalBudget, totalSpent, totalRemaining: totalBudget - totalSpent };
 }
 
+// ── 帳戶 / 轉帳 ──
+//
+// 帳戶餘額不是存一個容易跑掉的累計數字,而是「起始餘額 + 起始日期之後的異動」每次
+// 查詢當下重新加總——記帳、改資料、刪記錄都不會讓餘額對不起來。
+
+// 讀所有帳戶(名稱 / 起始餘額 / 起始日期)
+async function getAccounts(auth) {
+  const rows = await readRows(auth, ACCOUNT_SHEET);
+  return rows.filter((r) => r[0]).map((r) => ({ name: r[0], startBalance: Number(r[1]) || 0, startDate: r[2] || '1970-01-01' }));
+}
+
+// 把使用者打的文字對應到真實帳戶名稱(完全比對優先,再寬鬆比對),找不到回傳 null
+async function resolveAccountName(auth, text) {
+  if (!text) return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const accounts = await getAccounts(auth);
+  const exact = accounts.find((a) => a.name === trimmed);
+  if (exact) return exact.name;
+  const fuzzy = accounts.find((a) => trimmed.includes(a.name) || a.name.includes(trimmed));
+  return fuzzy ? fuzzy.name : null;
+}
+
+// 新增帳戶
+async function addAccount(auth, name, startBalance = 0) {
+  const accounts = await getAccounts(auth);
+  if (accounts.some((a) => a.name === name)) {
+    throw new Error(`帳戶「${name}」已經存在`);
+  }
+  const { date } = taipeiNowParts();
+  await appendRow(auth, ACCOUNT_SHEET, [name, startBalance, date]);
+  return { name, startBalance, startDate: date };
+}
+
+// 移除帳戶(只是不再追蹤,歷史記帳/轉帳紀錄不會被刪除或改動)
+async function removeAccount(auth, name) {
+  const sheets = google.sheets({ version: 'v4', auth });
+  const rows = await readRows(auth, ACCOUNT_SHEET);
+  const idx = rows.findIndex((r) => r[0] === name);
+  if (idx === -1) return false;
+
+  const sheetId = await getSheetId(auth, ACCOUNT_SHEET);
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: getSpreadsheetId(),
+    requestBody: {
+      requests: [{ deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: idx + 1, endIndex: idx + 2 } } }],
+    },
+  });
+  return true;
+}
+
+// 校正帳戶餘額(手動對過帳、跟現實金額對不上時強制同步):起始日期重設為今天,
+// 今天以前的記帳/轉帳都不會再影響這個帳戶的餘額計算
+async function setAccountBaseline(auth, name, balance) {
+  const sheets = google.sheets({ version: 'v4', auth });
+  const rows = await readRows(auth, ACCOUNT_SHEET);
+  const idx = rows.findIndex((r) => r[0] === name);
+  const { date } = taipeiNowParts();
+
+  if (idx === -1) {
+    await appendRow(auth, ACCOUNT_SHEET, [name, balance, date]);
+    return;
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: getSpreadsheetId(),
+    range: `${ACCOUNT_SHEET}!B${idx + 2}:C${idx + 2}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[balance, date]] },
+  });
+}
+
+// 算出所有帳戶目前的餘額
+async function getAllAccountBalances(auth) {
+  const accounts = await getAccounts(auth);
+  if (!accounts.length) return [];
+
+  const [expenseRows, transferRows] = await Promise.all([readRows(auth, EXPENSE_SHEET), readRows(auth, TRANSFER_SHEET)]);
+
+  return accounts.map((account) => {
+    const spent = expenseRows
+      .filter((r) => (r[0] || '') >= account.startDate && r[4] === account.name)
+      .reduce((s, r) => s + (Number(r[3]) || 0), 0);
+    const transferredOut = transferRows
+      .filter((r) => (r[0] || '') >= account.startDate && r[2] === account.name)
+      .reduce((s, r) => s + (Number(r[4]) || 0), 0);
+    const transferredIn = transferRows
+      .filter((r) => (r[0] || '') >= account.startDate && r[3] === account.name)
+      .reduce((s, r) => s + (Number(r[4]) || 0), 0);
+    return { name: account.name, balance: account.startBalance - spent - transferredOut + transferredIn };
+  });
+}
+
+// 記一筆轉帳:日期 / 時間 / 從帳戶 / 到帳戶 / 金額 / 備註
+async function addTransfer(auth, { from, to, amount, note = '' }) {
+  const { date, time } = taipeiNowParts();
+  await appendRow(auth, TRANSFER_SHEET, [date, time, from, to, amount, note]);
+  return { date, from, to, amount };
+}
+
 // ── 筆記 ──
 
 // 新增一則不綁時間的筆記
@@ -375,8 +459,13 @@ module.exports = {
   getBudgets,
   getBudgetStatus,
   setBudget,
-  addSavings,
-  getMonthlySavings,
+  getAccounts,
+  resolveAccountName,
+  addAccount,
+  removeAccount,
+  setAccountBaseline,
+  getAllAccountBalances,
+  addTransfer,
   deleteLastExpense,
   updateLastExpenseAmount,
   searchExpenses,
@@ -388,5 +477,8 @@ module.exports = {
   EXPENSE_SHEET,
   NOTE_SHEET,
   BUDGET_SHEET,
+  ACCOUNT_SHEET,
+  TRANSFER_SHEET,
+  DEFAULT_ACCOUNT,
   SETUP_HINT,
 };
