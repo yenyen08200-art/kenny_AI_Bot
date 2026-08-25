@@ -14,6 +14,8 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "query_free_slots": 在問哪些時段有空(例如「這週哪天有空」)
 - "help": 想知道這個機器人能做什麼
 - "add_expense": 想記一筆支出(有品項與金額)
+- "update_last_expense": 想修改最後一筆記帳的金額和/或加上備註(例如「把剛剛午餐的金額改成70,備註全家涼麵」)
+- "delete_last_expense": 想刪除最後一筆記帳
 - "query_expense": 在問這個月/上個月/某月花了多少錢
 - "query_expense_range": 在問某一天或某個日期區間花了多少錢(例如「今天花多少」「8/1到8/15花多少」)
 - "query_budget": 在問還剩多少預算/錢可以花
@@ -41,7 +43,8 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "dayOffset": "query_week:0=這週,7=下週",
   "days": "query_week:通常填 7",
   "item": "add_expense:支出品項,如果使用者有額外備註/說明,用「品項・備註」的格式合併成一個字串",
-  "amount": "add_expense / set_budget:金額,純數字",
+  "amount": "add_expense / set_budget:金額,純數字。update_last_expense:新金額,沒提到要改金額就填 null",
+  "note": "update_last_expense:要加上的備註文字,沒提到就填 null",
   "categoryText": "set_budget:分類文字(不用是精確分類名稱,系統會自動正規化)",
   "startDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD",
   "endDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD,單日查詢就跟 startDate 相同",
@@ -185,6 +188,22 @@ async function parseWithClaude(text) {
       return { intent: 'chitchat', reason: '沒有辨識出品項或金額' };
     }
     return { intent: 'add_expense', item: String(parsed.item).slice(0, 50), amount };
+  }
+
+  if (parsed.intent === 'delete_last_expense') {
+    return { intent: 'delete_last_expense' };
+  }
+
+  if (parsed.intent === 'update_last_expense') {
+    const amount = parsed.amount !== null && parsed.amount !== undefined ? Number(parsed.amount) : null;
+    if (amount !== null && (!Number.isFinite(amount) || amount <= 0)) {
+      return { intent: 'chitchat', reason: '金額格式無法辨識' };
+    }
+    const note = parsed.note ? String(parsed.note).slice(0, 50) : null;
+    if (amount === null && !note) {
+      return { intent: 'chitchat', reason: '沒有辨識出要改金額還是備註' };
+    }
+    return { intent: 'update_last_expense', amount, note };
   }
 
   if (parsed.intent === 'add_note') {

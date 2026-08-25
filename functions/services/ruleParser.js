@@ -333,9 +333,10 @@ function tryParseExpenseFix(text) {
     return { intent: 'delete_last_expense' };
   }
 
-  const amend = text.match(/^(?:改成|改為|更正為|應該是)\s*(\d{1,7})\s*(?:元|塊)?$/);
+  // 金額後面可以再接一句備註,例如「改成70 然後備注全家涼麵」
+  const amend = text.match(new RegExp(`^(?:改成|改為|更正為|應該是)\\s*(\\d{1,7})\\s*(?:元|塊)?(?:\\s*然後)?${NOTE_CLAUSE}$`));
   if (amend) {
-    return { intent: 'update_last_expense', amount: Number(amend[1]) };
+    return { intent: 'update_last_expense', amount: Number(amend[1]), note: amend[2] ? amend[2].trim().slice(0, 50) : null };
   }
 
   return null;

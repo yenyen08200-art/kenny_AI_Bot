@@ -513,7 +513,7 @@ async function handleDeleteLastExpense(event, client) {
 
 async function handleUpdateLastExpense(event, client, parsed) {
   const auth = authorize();
-  const updated = await sheetsService.updateLastExpenseAmount(auth, parsed.amount);
+  const updated = await sheetsService.updateLastExpenseAmount(auth, { amount: parsed.amount, note: parsed.note });
   if (!updated) return reply(client, event, '💰 目前沒有任何記帳紀錄可以修改');
   return reply(client, event, `✏️ 已修正\n${updated.item}:$${updated.oldAmount} → $${updated.newAmount}`);
 }
@@ -657,7 +657,7 @@ const HELP_SECTIONS = [
       { left: '加備註', right: '晚餐100 備註正宗排骨飯(之後可以搜尋到)' },
       { left: '記多筆', right: '早餐50 午餐120 晚餐200' },
       { left: '刪除', right: '刪掉剛剛那筆' },
-      { left: '改金額', right: '改成 150' },
+      { left: '改金額', right: '改成 150 / 改成70 然後備註全家涼麵' },
       { left: '統計', right: '這個月花多少(含分類佔比)' },
       { left: '查月份', right: '上個月花多少 / 7月花多少' },
       { left: '查單日', right: '今天花多少 / 昨天花多少 / 8月20日花多少' },

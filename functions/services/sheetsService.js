@@ -177,23 +177,27 @@ async function deleteLastExpense(auth) {
   return { date, item, amount: Number(amount) || 0 };
 }
 
-// 修改最後一筆記帳的金額(打錯數字時用)
-async function updateLastExpenseAmount(auth, newAmount) {
+// 修改最後一筆記帳的金額和/或備註(打錯數字、忘記寫細節時用)。
+// amount 是 null 就不改金額,note 是 null 就不改品項。
+async function updateLastExpenseAmount(auth, { amount = null, note = null } = {}) {
   const rows = await readRows(auth, EXPENSE_SHEET);
   if (!rows.length) return null;
 
   const lastRowIndex = rows.length + 1;
-  const [, , item, oldAmount] = rows[rows.length - 1];
+  const [, , oldItem, oldAmount] = rows[rows.length - 1];
+
+  const newAmount = amount !== null ? amount : Number(oldAmount) || 0;
+  const newItem = note ? `${oldItem}・${note}` : oldItem;
 
   const sheets = google.sheets({ version: 'v4', auth });
   await sheets.spreadsheets.values.update({
     spreadsheetId: getSpreadsheetId(),
-    range: `${EXPENSE_SHEET}!D${lastRowIndex}`,
+    range: `${EXPENSE_SHEET}!C${lastRowIndex}:D${lastRowIndex}`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[newAmount]] },
+    requestBody: { values: [[newItem, newAmount]] },
   });
 
-  return { item, oldAmount: Number(oldAmount) || 0, newAmount };
+  return { item: newItem, oldAmount: Number(oldAmount) || 0, newAmount };
 }
 
 // 查某個日期區間(含頭尾)的支出,startDate/endDate 皆為 'YYYY-MM-DD'
