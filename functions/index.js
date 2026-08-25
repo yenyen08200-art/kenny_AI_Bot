@@ -34,7 +34,6 @@ const { classify } = require('./services/expenseCategory');
 const taskManager = require('./modules/taskManager');
 
 // ── Secrets(名稱需對應 firebase functions:secrets:set 建立的名稱)──
-const GEMINI_API_KEY = defineSecret('GEMINI_API_KEY');
 const ANTHROPIC_API_KEY = defineSecret('ANTHROPIC_API_KEY');
 const CWA_API_KEY = defineSecret('CWA_API_KEY');
 const LINE_CHANNEL_ACCESS_TOKEN = defineSecret('LINE_CHANNEL_ACCESS_TOKEN');
@@ -56,9 +55,9 @@ const WEBHOOK_SECRETS = [
   GOOGLE_SHEETS_ID,
 ];
 
-// 每日晨報維持用 Gemini 生成摘要文字(一天只呼叫一次,不受額度影響)
+// 每日晨報用 Claude Haiku 生成摘要文字(一天只呼叫一次,不再依賴 Gemini)
 const BRIEFING_SECRETS = [
-  GEMINI_API_KEY,
+  ANTHROPIC_API_KEY,
   CWA_API_KEY,
   LINE_CHANNEL_ACCESS_TOKEN,
   LINE_USER_ID,
