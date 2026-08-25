@@ -1043,7 +1043,9 @@ async function handleWeeklyWeather(event, client) {
     subtitle: '未來 7 天預報',
     sections: [
       {
-        rows: days.map((d) => ({ left: formatDateShort(d.date), right: `${d.description}・${d.minTemp}-${d.maxTemp}°C` })),
+        // 日期(含星期幾)+天氣+氣溫全部併成一個 left,不分左右欄——分兩欄在窄螢幕上
+        // 日期含星期幾會被切斷看不到,併成一行、讓它自然換行,不會被裁切
+        rows: days.map((d) => ({ left: `${formatDateShort(d.date)} ${d.description}・${d.minTemp}-${d.maxTemp}°C` })),
       },
     ],
     footerText: '超過 36 小時的預報沒有降雨機率資料,只顯示天氣現象跟氣溫',
