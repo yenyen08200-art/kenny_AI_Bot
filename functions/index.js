@@ -636,6 +636,46 @@ async function handleExpenseCompare(event, client) {
   return replyCard(client, event, card);
 }
 
+// ── 對帳:把支出、分類佔比、預算狀態、存款整合成一張卡片 ──
+async function handleReconcile(event, client) {
+  const auth = authorize();
+  const [expense, byCategory, budgetStatus, savings] = await Promise.all([
+    sheetsService.getMonthlyExpense(auth),
+    sheetsService.getMonthlyExpenseByCategory(auth),
+    sheetsService.getBudgetStatus(auth),
+    sheetsService.getMonthlySavings(auth),
+  ]);
+
+  const sections = [];
+  if (budgetStatus.items.length) {
+    sections.push({
+      heading: '💰 預算狀態',
+      rows: budgetStatus.items.map((b) => ({
+        left: b.category,
+        right: `$${b.spent.toLocaleString()} / $${b.budget.toLocaleString()}${b.remaining < 0 ? ' ⚠️' : ''}`,
+        bold: b.remaining < 0,
+      })),
+    });
+  }
+  sections.push({
+    heading: '🏦 本月存款',
+    rows: savings.count ? [{ left: `累計存入・${savings.count} 筆`, right: `$${savings.total.toLocaleString()}`, bold: true }] : [],
+    emptyText: '這個月還沒有存款紀錄',
+  });
+
+  const card = buildListCard({
+    title: '🧾 財務對帳',
+    subtitle: `${expense.yearMonth}・本月支出總覽`,
+    accent: budgetStatus.totalRemaining < 0 ? COLOR.rainHigh : COLOR.rainLow,
+    hero: { value: `$${expense.total.toLocaleString()}`, label: `本月支出・${expense.count} 筆` },
+    imageUrl: buildCategoryPieChartUrl(byCategory),
+    sections,
+    footerText: '不含帳戶餘額/收入,只彙整支出、預算、存款三種資料',
+  });
+
+  return replyCard(client, event, card);
+}
+
 // ── 指令說明 ──
 const HELP_SECTIONS = [
   {
@@ -668,6 +708,7 @@ const HELP_SECTIONS = [
       { left: '剩餘預算', right: '剩餘預算' },
       { left: '存款分配', right: '薪水32000 扣3000房租 扣5000存款' },
       { left: '存款統計', right: '本月存了多少' },
+      { left: '對帳', right: '對帳(支出+分類+預算+存款整合一張卡片)' },
     ],
   },
   {
@@ -872,6 +913,7 @@ async function handleTextMessage(event, client) {
     query_expense: handleExpenseQuery,
     query_expense_range: handleExpenseRangeQuery,
     query_expense_compare: handleExpenseCompare,
+    reconcile: handleReconcile,
     query_budget: handleBudgetStatus,
     set_budget: handleSetBudget,
     query_savings: handleSavingsQuery,

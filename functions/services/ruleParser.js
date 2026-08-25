@@ -295,6 +295,14 @@ function tryParseSavingsQuery(text) {
   return null;
 }
 
+// 對帳:把支出/分類/預算/存款整合成一張卡片
+function tryParseReconcile(text) {
+  if (/^(對帳|財務對帳|財務總覽|收支總覽)$/.test(text)) {
+    return { intent: 'reconcile' };
+  }
+  return null;
+}
+
 // 設定分類的月預算:「設定預算 房租 3000」。類別文字直接丟給 classify() 正規化,
 // 打錯字/寫法不同也會落到固定分類上,不會多開一個新分類
 function tryParseSetBudget(text) {
@@ -604,6 +612,7 @@ function parseWithRules(text) {
     tryParseExpenseSearch(trimmed) ||
     tryParseBudget(trimmed) ||
     tryParseSavingsQuery(trimmed) ||
+    tryParseReconcile(trimmed) ||
     tryParseSetBudget(trimmed) ||
     tryParseAllocation(trimmed) ||
     tryParseExpenseCompare(trimmed) ||

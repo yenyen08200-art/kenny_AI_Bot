@@ -21,6 +21,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "query_budget": 在問還剩多少預算/錢可以花
 - "set_budget": 想設定/修改某個分類的月預算(例如「設定預算 房租 3000」)
 - "query_savings": 在問這個月存了多少錢
+- "reconcile": 想看整合的財務總覽/對帳(支出+分類+預算+存款)
 - "add_allocation": 薪水入帳後一次分配到多個項目,同時有支出跟存款(例如「薪水32000 扣3000房租 扣5000存款」)
 - "add_note": 想記一則不綁時間的筆記/備忘
 - "query_notes": 想看目前的待辦筆記
@@ -127,7 +128,7 @@ async function parseWithClaude(text) {
     };
   }
 
-  if (['query_weather', 'query_overview', 'query_expense', 'query_budget', 'help'].includes(parsed.intent)) {
+  if (['query_weather', 'query_overview', 'query_expense', 'query_budget', 'reconcile', 'help'].includes(parsed.intent)) {
     return { intent: parsed.intent };
   }
 
