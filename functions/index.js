@@ -26,7 +26,7 @@ const { getTodayWeather } = require('./services/weatherService');
 const { generateBriefingData } = require('./services/aiService');
 const { parseWithRules } = require('./services/ruleParser');
 const { parseWithClaude } = require('./services/claudeService');
-const { buildMorningBriefingFlex, buildListCard, COLOR, rainColor } = require('./services/flexMessageBuilder');
+const { buildMorningBriefingFlex, buildListCard, buildCategoryPieChartUrl, COLOR, rainColor } = require('./services/flexMessageBuilder');
 const { getFreeSlotsForDay, WORK_START_HOUR, WORK_END_HOUR } = require('./services/freeSlotService');
 const { pushMessage } = require('./services/lineService');
 const sheetsService = require('./services/sheetsService');
@@ -524,12 +524,8 @@ function buildExpenseCard({ yearMonth, total, count, topItems }, byCategory, { t
     subtitle: subtitle || `${count} 筆紀錄`,
     accent,
     hero: { value: `$${total.toLocaleString()}`, label: `${yearMonth} 總支出・${count} 筆` },
+    imageUrl: buildCategoryPieChartUrl(byCategory),
     sections: [
-      {
-        heading: '📊 分類佔比',
-        rows: byCategory.map((c) => ({ left: c.category, right: `$${c.total.toLocaleString()}`, bold: true })),
-        emptyText: '這個月還沒有任何記帳紀錄',
-      },
       {
         heading: '花最多的項目',
         rows: topItems.map(([item, amount]) => ({ left: item, right: `$${amount.toLocaleString()}`, bold: true })),
@@ -1022,13 +1018,8 @@ exports.monthlyReview = onSchedule(
       subtitle: current.yearMonth,
       accent: diff > 0 ? COLOR.rainHigh : diff < 0 ? COLOR.rainLow : COLOR.primary,
       hero: { value: `$${current.total.toLocaleString()}`, label: `本月總支出・${current.count} 筆・${trend}` },
-      sections: [
-        {
-          heading: '📊 分類佔比',
-          rows: byCategory.map((c) => ({ left: c.category, right: `$${c.total.toLocaleString()}`, bold: true })),
-          emptyText: '這個月還沒有記帳紀錄',
-        },
-      ],
+      imageUrl: buildCategoryPieChartUrl(byCategory),
+      sections: byCategory.length ? [] : [{ heading: '📊 分類佔比', rows: [], emptyText: '這個月還沒有記帳紀錄' }],
       footerText: `上月 $${previous.total.toLocaleString()}・${previous.count} 筆`,
     });
 

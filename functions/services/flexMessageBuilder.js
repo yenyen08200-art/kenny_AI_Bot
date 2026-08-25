@@ -225,7 +225,31 @@ function buildSection(section) {
   return { type: 'box', layout: 'vertical', spacing: 'sm', contents };
 }
 
-function buildListCard({ title, subtitle, sections = [], hero = null, footerText = null, accent = COLOR.primary }) {
+// 分類佔比圓餅圖:用 QuickChart(免費、不用金鑰,個人用量遠低於每月 1000 張的免費額度)
+// 把 chart.js 設定丟進 URL 換一張圖片網址,直接當 Flex Message 的 image 區塊用
+const CHART_PALETTE = ['#4A90D9', '#50B87C', '#F2A93B', '#9B6FD1', '#E1615B', '#6B7684', '#2FA0A0', '#D67AB1', '#8FA83C', '#C97A3D'];
+
+function buildCategoryPieChartUrl(byCategory) {
+  if (!byCategory || !byCategory.length) return null;
+
+  const config = {
+    type: 'pie',
+    data: {
+      labels: byCategory.map((c) => c.category),
+      datasets: [{ data: byCategory.map((c) => c.total), backgroundColor: CHART_PALETTE }],
+    },
+    options: {
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { size: 13 } } },
+        datalabels: { display: false },
+      },
+    },
+  };
+
+  return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(config))}&backgroundColor=white&width=500&height=420`;
+}
+
+function buildListCard({ title, subtitle, sections = [], hero = null, footerText = null, accent = COLOR.primary, imageUrl = null }) {
   const bodyContents = [];
 
   if (hero) {
@@ -242,8 +266,12 @@ function buildListCard({ title, subtitle, sections = [], hero = null, footerText
     });
   }
 
+  if (imageUrl) {
+    bodyContents.push({ type: 'image', url: imageUrl, size: 'full', aspectRatio: '5:4', aspectMode: 'fit' });
+  }
+
   sections.forEach((section, idx) => {
-    if (idx > 0 || hero) bodyContents.push({ type: 'separator', margin: 'md' });
+    if (idx > 0 || hero || imageUrl) bodyContents.push({ type: 'separator', margin: 'md' });
     bodyContents.push(buildSection(section));
   });
 
@@ -284,4 +312,4 @@ function buildListCard({ title, subtitle, sections = [], hero = null, footerText
   return { type: 'flex', altText: title, contents: bubble };
 }
 
-module.exports = { buildMorningBriefingFlex, buildListCard, COLOR, rainColor };
+module.exports = { buildMorningBriefingFlex, buildListCard, buildCategoryPieChartUrl, COLOR, rainColor };
