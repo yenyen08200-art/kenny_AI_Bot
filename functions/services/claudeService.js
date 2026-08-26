@@ -8,7 +8,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "delete_event": 想取消/刪除某筆行程
 - "rename_event": 想把某筆已存在行程的標題改掉(例如「屏科大活動改成屏科大活動企劃」),不是要改時間、不是要新增
 - "search_event": 想搜尋某個行程何時發生(例如「牙醫什麼時候」)
-- "query_weather": 在問天氣
+- "query_weather": 在問天氣(可能是今天,也可能問明天/後天等未來某一天)
 - "query_schedule": 在問某一天的行程
 - "query_week": 在問整週的行程
 - "query_overview": 想一次看今天的天氣加行程總覽
@@ -51,6 +51,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "keyword": "delete_event / search_event / search_note / search_expense / rename_event:要比對的關鍵字。teach_category:要教的關鍵字",
   "newTitle": "rename_event:改完之後的新標題",
   "dateOffset": "query_schedule / delete_event:整數,0=今天,1=明天,以此類推",
+  "dayOffset": "query_weather:整數,0=今天,1=明天,以此類推,沒提到哪一天就填 0",
   "period": "query_schedule:all / morning / afternoon / evening",
   "specificTime": "query_schedule 問特定時間點時:ISO 8601 時間字串,否則 null",
   "dayOffset": "query_week:0=這週,7=下週",
@@ -147,8 +148,13 @@ async function parseWithClaude(text) {
     };
   }
 
-  if (['query_weather', 'query_overview', 'query_expense', 'query_budget', 'reconcile', 'help'].includes(parsed.intent)) {
+  if (['query_overview', 'query_expense', 'query_budget', 'reconcile', 'help'].includes(parsed.intent)) {
     return { intent: parsed.intent };
+  }
+
+  if (parsed.intent === 'query_weather') {
+    const dayOffset = Number.isInteger(parsed.dayOffset) ? parsed.dayOffset : 0;
+    return { intent: 'query_weather', dayOffset };
   }
 
   if (parsed.intent === 'query_free_slots') {

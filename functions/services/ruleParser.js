@@ -121,7 +121,14 @@ function tryParseAddEvent(text, now) {
 // 嘗試用關鍵字判斷「查天氣 / 查行程」
 function tryParseQuery(text, now) {
   if (WEATHER_KEYWORDS.test(text)) {
-    return { intent: 'query_weather' };
+    const dateParts = parseDateOffset(text, now);
+    let dayOffset = 0;
+    if (dateParts) {
+      const nowUTC = Date.UTC(now.year, now.month - 1, now.day);
+      const targetUTC = Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day);
+      dayOffset = Math.round((targetUTC - nowUTC) / 86400000);
+    }
+    return { intent: 'query_weather', dayOffset };
   }
 
   if (SCHEDULE_KEYWORDS.test(text)) {
