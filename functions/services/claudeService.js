@@ -6,6 +6,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 意圖只能是以下其中一種:
 - "add_event": 想新增一筆行程/待辦(訊息裡有明確或可換算的時間)
 - "delete_event": 想取消/刪除某筆行程
+- "rename_event": 想把某筆已存在行程的標題改掉(例如「屏科大活動改成屏科大活動企劃」),不是要改時間、不是要新增
 - "search_event": 想搜尋某個行程何時發生(例如「牙醫什麼時候」)
 - "query_weather": 在問天氣
 - "query_schedule": 在問某一天的行程
@@ -47,7 +48,8 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "title": "add_event:行程標題,簡潔、去除時間詞",
   "startTime": "add_event:ISO 8601 時間字串,含時區",
   "endTime": "add_event:ISO 8601 時間字串",
-  "keyword": "delete_event / search_event / search_note / search_expense:要比對的關鍵字。teach_category:要教的關鍵字",
+  "keyword": "delete_event / search_event / search_note / search_expense / rename_event:要比對的關鍵字。teach_category:要教的關鍵字",
+  "newTitle": "rename_event:改完之後的新標題",
   "dateOffset": "query_schedule / delete_event:整數,0=今天,1=明天,以此類推",
   "period": "query_schedule:all / morning / afternoon / evening",
   "specificTime": "query_schedule 問特定時間點時:ISO 8601 時間字串,否則 null",
@@ -193,6 +195,15 @@ async function parseWithClaude(text) {
       if (!Number.isNaN(t.getTime())) targetTime = t.toISOString();
     }
     return { intent: 'delete_event', keyword, dateOffset, targetTime };
+  }
+
+  if (parsed.intent === 'rename_event') {
+    const sourceKeyword = parsed.keyword ? String(parsed.keyword).slice(0, 50) : null;
+    const newTitle = parsed.newTitle ? String(parsed.newTitle).slice(0, 100) : null;
+    if (!sourceKeyword || !newTitle) {
+      return { intent: 'chitchat', reason: '沒有指明要改哪一筆行程,或沒有新標題' };
+    }
+    return { intent: 'rename_event', sourceKeyword, newTitle };
   }
 
   if (parsed.intent === 'search_event') {

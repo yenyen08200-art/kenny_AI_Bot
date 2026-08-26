@@ -93,6 +93,17 @@ async function updateEventTime(auth, eventId, { start, end }) {
   return mapEvent(res.data);
 }
 
+// 改標題:更新一筆行程的標題(summary)
+async function updateEventSummary(auth, eventId, summary) {
+  const calendar = google.calendar({ version: 'v3', auth });
+  const res = await calendar.events.patch({
+    calendarId: 'primary',
+    eventId,
+    requestBody: { summary },
+  });
+  return mapEvent(res.data);
+}
+
 // 新增循環行程。recurrence 例:'RRULE:FREQ=WEEKLY;BYDAY=WE'
 async function addRecurringEvent(auth, { summary, start, end, recurrence, description = '' }) {
   const calendar = google.calendar({ version: 'v3', auth });
@@ -151,6 +162,7 @@ module.exports = {
   addEvent,
   addRecurringEvent,
   updateEventTime,
+  updateEventSummary,
   deleteEvent,
   findOverlappingEvents,
 };

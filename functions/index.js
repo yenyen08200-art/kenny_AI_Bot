@@ -19,6 +19,7 @@ const {
   addEvent,
   addRecurringEvent,
   updateEventTime,
+  updateEventSummary,
   deleteEvent,
 } = require('./services/calendarService');
 const { taipeiDayStart } = require('./services/dateUtil');
@@ -414,6 +415,38 @@ async function handleReschedule(event, client, parsed) {
   );
 }
 
+// 改標題:用關鍵字定位行程,更新它的標題(summary)
+async function handleRenameEvent(event, client, parsed) {
+  const auth = authorize();
+
+  const candidates = await searchEvents(auth, parsed.sourceKeyword);
+
+  if (!candidates.length) {
+    return reply(client, event, `🔍 找不到「${parsed.sourceKeyword}」相關的行程`);
+  }
+  if (candidates.length > 1) {
+    const card = buildListCard({
+      title: '⚠️ 找到多筆行程',
+      subtitle: '請講得更明確一點,例如帶上日期',
+      accent: COLOR.rainMid,
+      sections: [
+        {
+          rows: candidates.slice(0, 8).map((e) => ({
+            left: formatDateShort(e.start),
+            right: `${formatTime(e.start)} ${e.summary}`,
+          })),
+        },
+      ],
+    });
+    return replyCard(client, event, card);
+  }
+
+  const target = candidates[0];
+  const updated = await updateEventSummary(auth, target.id, parsed.newTitle);
+
+  return reply(client, event, `✏️ 已改標題\n舊:${target.summary}\n新:${updated.summary}`);
+}
+
 // ── 循環行程 ──
 async function handleRecurringEvent(event, client, parsed) {
   const auth = authorize();
@@ -716,6 +749,7 @@ const HELP_SECTIONS = [
       { left: '新增', right: '明天下午3點跟設計師開會' },
       { left: '循環', right: '每週三下午2點健身' },
       { left: '改期', right: '把明天的會議改到後天' },
+      { left: '改標題', right: '屏科大活動 改成 屏科大活動企劃' },
       { left: '取消', right: '取消 牙醫' },
       { left: '搜尋', right: '牙醫什麼時候 / 找 攝影' },
       { left: '查詢', right: '今天行程 / 這週行程 / 下午3點有沒有行程' },
@@ -1124,6 +1158,7 @@ async function handleTextMessage(event, client) {
     add_event: handleAddEvent,
     add_recurring_event: handleRecurringEvent,
     reschedule_event: handleReschedule,
+    rename_event: handleRenameEvent,
     delete_event: handleDeleteEvent,
     search_event: handleSearchEvent,
     query_weather: handleWeatherQuery,

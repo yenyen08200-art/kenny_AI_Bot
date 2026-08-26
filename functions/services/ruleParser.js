@@ -591,6 +591,19 @@ function tryParseReschedule(text, now) {
   };
 }
 
+// 改標題:例「更改 屏科大活動 改成 屏科大活動企劃」「把牙醫改名為牙醫回診」
+// 用「改成/改為/改名為/改名成」跟改期(用「到」)區分,避免互相誤判
+function tryParseRenameEvent(text) {
+  const m = text.match(/^(?:更改|修改|把|將)?(.+?)(?:的)?(?:標題|名稱)?改(?:成|為|名為|名成)(.+)$/);
+  if (!m) return null;
+
+  const sourceKeyword = m[1].trim().replace(/(的)?(行程|活動|會議|事情|安排)$/, '').trim();
+  const newTitle = m[2].trim();
+  if (!sourceKeyword || !newTitle) return null;
+
+  return { intent: 'rename_event', sourceKeyword, newTitle };
+}
+
 // ── 循環行程 ──
 
 function tryParseRecurring(text, now) {
@@ -740,6 +753,7 @@ function parseWithRules(text) {
     tryParseWeeklyWeather(trimmed) ||
     tryParseFreeSlots(trimmed, now) ||
     tryParseReschedule(trimmed, now) ||
+    tryParseRenameEvent(trimmed) ||
     tryParseDeleteEvent(trimmed, now) ||
     tryParseOverview(trimmed) ||
     tryParseWeek(trimmed) ||
