@@ -8,9 +8,9 @@ const CWA_ENDPOINT = 'https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-
 const WEEKLY_ENDPOINT = 'https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-C0032-005';
 
 // 取得今日天氣重點:天氣現象、降雨機率、氣溫範圍
-async function getTodayWeather() {
+async function getTodayWeather(overrideLocation) {
   const apiKey = process.env.CWA_API_KEY;
-  const location = process.env.CWA_LOCATION || '臺南市';
+  const location = overrideLocation || process.env.CWA_LOCATION || '臺南市';
 
   if (!apiKey) {
     throw new Error('缺少 CWA_API_KEY,請至 .env 設定中央氣象署開放資料 API 金鑰。');
@@ -47,9 +47,9 @@ async function getTodayWeather() {
 // 一週預報(F-C0032-005)本身沒有降雨機率——CWA 只在 36 小時內提供 12 小時降雨機率,
 // 所以額外查 36 小時預報(F-C0032-001)的 PoP,把有的那 1-2 天併進去;
 // 更後面的日子就沒有降雨機率資料,rainChance 會是 null。
-async function getWeeklyWeather() {
+async function getWeeklyWeather(overrideLocation) {
   const apiKey = process.env.CWA_API_KEY;
-  const location = process.env.CWA_LOCATION || '臺南市';
+  const location = overrideLocation || process.env.CWA_LOCATION || '臺南市';
 
   if (!apiKey) {
     throw new Error('缺少 CWA_API_KEY,請至 .env 設定中央氣象署開放資料 API 金鑰。');

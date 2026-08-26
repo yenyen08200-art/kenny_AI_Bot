@@ -1,5 +1,6 @@
 // Claude fallback:只有規則解析器判斷不出來時才會呼叫,頻率很低
 const Anthropic = require('@anthropic-ai/sdk');
+const { extractCity } = require('./ruleParser');
 
 const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者傳來的訊息屬於哪一種意圖,只輸出一個 JSON 物件,不要有其他文字、不要加 markdown code fence。
 
@@ -32,7 +33,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "account_ledger": 想看某個帳戶最近的異動明細(例如「現金明細」)
 - "query_transfers": 想看轉帳紀錄(不限帳戶)
 - "teach_category": 想教機器人把某個關鍵字歸到某個分類(例如「星巴克算學習工作」)
-- "query_weekly_weather": 在問這週/未來幾天的天氣
+- "query_weekly_weather": 在問這週/未來幾天的天氣(可能指定縣市,也可能沒有)
 - "add_allocation": 薪水入帳後一次分配到多個項目,同時有支出跟存款(例如「薪水32000 扣3000房租 扣5000存款」)
 - "add_note": 想記一則不綁時間的筆記/備忘
 - "query_notes": 想看目前的待辦筆記
@@ -52,6 +53,7 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "newTitle": "rename_event:改完之後的新標題",
   "dateOffset": "query_schedule / delete_event:整數,0=今天,1=明天,以此類推",
   "dayOffset": "query_weather:整數,0=今天,1=明天,以此類推,沒提到哪一天就填 0",
+  "location": "query_weather / query_weekly_weather:使用者講的縣市名稱(例如「台北」「臺北市」都可以),沒提到就填 null",
   "period": "query_schedule:all / morning / afternoon / evening",
   "specificTime": "query_schedule 問特定時間點時:ISO 8601 時間字串,否則 null",
   "dayOffset": "query_week:0=這週,7=下週",
@@ -154,7 +156,8 @@ async function parseWithClaude(text) {
 
   if (parsed.intent === 'query_weather') {
     const dayOffset = Number.isInteger(parsed.dayOffset) ? parsed.dayOffset : 0;
-    return { intent: 'query_weather', dayOffset };
+    const location = parsed.location ? extractCity(String(parsed.location)) : null;
+    return { intent: 'query_weather', dayOffset, location };
   }
 
   if (parsed.intent === 'query_free_slots') {
@@ -295,7 +298,8 @@ async function parseWithClaude(text) {
   }
 
   if (parsed.intent === 'query_weekly_weather') {
-    return { intent: 'query_weekly_weather' };
+    const location = parsed.location ? extractCity(String(parsed.location)) : null;
+    return { intent: 'query_weekly_weather', location };
   }
 
   if (parsed.intent === 'delete_last_expense') {

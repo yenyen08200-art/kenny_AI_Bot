@@ -213,14 +213,16 @@ async function handleWeatherQuery(event, client, parsed) {
   const dayOffset = parsed && Number.isInteger(parsed.dayOffset) ? parsed.dayOffset : 0;
   const t0 = Date.now();
 
+  const location = parsed && parsed.location;
+
   if (dayOffset === 0) {
-    const weather = await getTodayWeather();
+    const weather = await getTodayWeather(location);
     logger.info(`[timing] CWA 天氣 API 耗時 ${Date.now() - t0}ms`);
     return reply(client, event, formatWeatherText(weather));
   }
 
   // 問未來某一天:改用一週預報,依 dayOffset 取對應那天(超出 7 天預報範圍就講清楚查不到)
-  const { location, days } = await getWeeklyWeather();
+  const { location: loc, days } = await getWeeklyWeather(location);
   logger.info(`[timing] CWA 天氣 API 耗時 ${Date.now() - t0}ms`);
   const target = days[dayOffset];
   if (!target) {
@@ -228,7 +230,7 @@ async function handleWeatherQuery(event, client, parsed) {
   }
 
   const weather = {
-    location,
+    location: loc,
     description: target.description,
     rainChance: target.rainChance !== null ? target.rainChance : '無資料',
     minTemp: target.minTemp,
@@ -1102,8 +1104,8 @@ function weatherEmoji(desc) {
   return '🌤️';
 }
 
-async function handleWeeklyWeather(event, client) {
-  const { location, days } = await getWeeklyWeather();
+async function handleWeeklyWeather(event, client, parsed) {
+  const { location, days } = await getWeeklyWeather(parsed && parsed.location);
   const card = buildListCard({
     title: `📅 ${location} 一週天氣`,
     subtitle: '未來 7 天預報',

@@ -8,6 +8,39 @@ const WEEKDAY_MAP = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, �
 const WEATHER_KEYWORDS = /天氣|會不會下雨|降雨|要不要帶傘|氣溫|會下雨嗎/;
 const SCHEDULE_KEYWORDS = /行程|事情|安排|有沒有事|待辦|有什麼事/;
 
+// 縣市別名 → CWA 開放資料使用的正式縣市名稱(一律用「臺」不用「台」)
+// 由長到短排序,避免「新竹市」被短的「新竹」提前比對到漏了「市」
+const CITY_ALIASES = [
+  ['臺北市', '臺北市'], ['台北市', '臺北市'], ['臺北', '臺北市'], ['台北', '臺北市'],
+  ['新北市', '新北市'], ['新北', '新北市'],
+  ['桃園市', '桃園市'], ['桃園', '桃園市'],
+  ['臺中市', '臺中市'], ['台中市', '臺中市'], ['臺中', '臺中市'], ['台中', '臺中市'],
+  ['臺南市', '臺南市'], ['台南市', '臺南市'], ['臺南', '臺南市'], ['台南', '臺南市'],
+  ['高雄市', '高雄市'], ['高雄', '高雄市'],
+  ['基隆市', '基隆市'], ['基隆', '基隆市'],
+  ['新竹市', '新竹市'], ['新竹縣', '新竹縣'], ['新竹', '新竹市'],
+  ['苗栗縣', '苗栗縣'], ['苗栗', '苗栗縣'],
+  ['彰化縣', '彰化縣'], ['彰化', '彰化縣'],
+  ['南投縣', '南投縣'], ['南投', '南投縣'],
+  ['雲林縣', '雲林縣'], ['雲林', '雲林縣'],
+  ['嘉義市', '嘉義市'], ['嘉義縣', '嘉義縣'], ['嘉義', '嘉義市'],
+  ['屏東縣', '屏東縣'], ['屏東', '屏東縣'],
+  ['宜蘭縣', '宜蘭縣'], ['宜蘭', '宜蘭縣'],
+  ['花蓮縣', '花蓮縣'], ['花蓮', '花蓮縣'],
+  ['臺東縣', '臺東縣'], ['台東縣', '臺東縣'], ['臺東', '臺東縣'], ['台東', '臺東縣'],
+  ['澎湖縣', '澎湖縣'], ['澎湖', '澎湖縣'],
+  ['金門縣', '金門縣'], ['金門', '金門縣'],
+  ['連江縣', '連江縣'], ['馬祖', '連江縣'],
+].sort((a, b) => b[0].length - a[0].length);
+
+// 從訊息裡找有沒有講到縣市名稱,回傳 CWA 格式的縣市名稱,沒講就回傳 null(交給呼叫端用預設值)
+function extractCity(text) {
+  for (const [alias, official] of CITY_ALIASES) {
+    if (text.includes(alias)) return official;
+  }
+  return null;
+}
+
 // 「品項 金額」這種簡短記帳寫法,遇到下列字詞就不當成記帳(避免把時間、行程誤判成金額)
 const NOT_EXPENSE_HINTS = /[點時:︰]|行程|天氣|明天|今天|後天|大後天|禮拜|星期|週|號|度|%|會議|提醒/;
 
@@ -128,7 +161,7 @@ function tryParseQuery(text, now) {
       const targetUTC = Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day);
       dayOffset = Math.round((targetUTC - nowUTC) / 86400000);
     }
-    return { intent: 'query_weather', dayOffset };
+    return { intent: 'query_weather', dayOffset, location: extractCity(text) };
   }
 
   if (SCHEDULE_KEYWORDS.test(text)) {
@@ -439,7 +472,7 @@ function tryParseTeachCategory(text) {
 // 一週天氣:「這週天氣」「一週天氣」「未來天氣」
 function tryParseWeeklyWeather(text) {
   if (/這週天氣|一週天氣|未來天氣|七天天氣|一週預報/.test(text)) {
-    return { intent: 'query_weekly_weather' };
+    return { intent: 'query_weekly_weather', location: extractCity(text) };
   }
   return null;
 }
@@ -774,4 +807,4 @@ function parseWithRules(text) {
   );
 }
 
-module.exports = { parseWithRules };
+module.exports = { parseWithRules, extractCity };
