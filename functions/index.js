@@ -827,7 +827,7 @@ const HELP_SECTIONS = [
       { left: '記下', right: '記一下要買隨身碟' },
       { left: '查看', right: '我的筆記' },
       { left: '完成', right: '完成 1 / 完成 1,2' },
-      { left: '刪除', right: '刪除筆記 1' },
+      { left: '刪除', right: '刪除筆記 1 / 刪除筆記 1,2(一次多個)' },
       { left: '搜尋', right: '找筆記 隨身碟' },
     ],
   },
@@ -864,7 +864,7 @@ async function handleQueryNotes(event, client) {
 
   const lines = [`📝 待辦筆記(${notes.length} 則)`];
   notes.forEach((n, i) => lines.push(`${i + 1}. ${n.content}`));
-  lines.push('', '完成傳「完成 1」、刪除傳「刪除筆記 1」,也可以一次多個「完成 1,2」');
+  lines.push('', '完成傳「完成 1」、刪除傳「刪除筆記 1」,也可以一次多個,例如「刪除筆記 1,2」');
 
   return reply(client, event, lines.join('\n'));
 }
