@@ -832,6 +832,14 @@ const HELP_SECTIONS = [
     ],
   },
   {
+    heading: '🧠 記憶',
+    rows: [
+      { left: '教它記住', right: '記住 我不吃香菜' },
+      { left: '查看', right: '我的記憶' },
+      { left: '刪除', right: '刪除記憶 1 / 刪除記憶 1,2(一次多個)' },
+    ],
+  },
+  {
     heading: '📌 其他',
     rows: [{ left: '總覽', right: '今天狀況(天氣+行程)' }],
   },
@@ -887,6 +895,38 @@ async function handleDeleteNote(event, client, parsed) {
     return reply(client, event, `🤔 找不到指定的筆記,可以先傳「我的筆記」看看清單`);
   }
   return reply(client, event, `🗑 已刪除 ${removed.length} 則\n${removed.map((n) => `・${n.content}`).join('\n')}`);
+}
+
+// ── 記憶(教機器人記住的固定事實/偏好,規則判斷不出來時會餵給 Claude 參考)──
+async function handleAddMemory(event, client, parsed) {
+  const auth = authorize();
+  await sheetsService.addMemory(auth, parsed.content);
+  return reply(client, event, `🧠 已記住\n${parsed.content}`);
+}
+
+async function handleQueryMemory(event, client) {
+  const auth = authorize();
+  const memories = await sheetsService.getMemories(auth);
+
+  if (!memories.length) {
+    return reply(client, event, '🧠 目前還沒有教我記住任何事,可以說「記住 我不吃香菜」');
+  }
+
+  const lines = [`🧠 記住的事(${memories.length} 則)`];
+  memories.forEach((m, i) => lines.push(`${i + 1}. ${m.content}`));
+  lines.push('', '刪除傳「刪除記憶 1」,也可以一次多個,例如「刪除記憶 1,2」');
+
+  return reply(client, event, lines.join('\n'));
+}
+
+async function handleDeleteMemory(event, client, parsed) {
+  const auth = authorize();
+  const removed = await sheetsService.deleteMemories(auth, parsed.indices);
+
+  if (!removed.length) {
+    return reply(client, event, `🤔 找不到指定的記憶,可以先傳「我的記憶」看看清單`);
+  }
+  return reply(client, event, `🗑 已刪除 ${removed.length} 則記憶\n${removed.map((m) => `・${m.content}`).join('\n')}`);
 }
 
 async function handleSearchNote(event, client, parsed) {
@@ -1173,7 +1213,13 @@ async function handleTextMessage(event, client) {
     logger.info(`[timing] 規則解析耗時 ${Date.now() - tRule}ms,意圖: ${parsed.intent}`);
   } else {
     const tClaude = Date.now();
-    parsed = await parseWithClaude(text);
+    let memories = [];
+    try {
+      memories = await sheetsService.getMemories(authorize());
+    } catch (err) {
+      logger.warn(`讀取記憶失敗,略過:${err.message}`);
+    }
+    parsed = await parseWithClaude(text, memories.map((m) => m.content));
     logger.info(`[timing] 規則判斷不出來,改用 Claude fallback,耗時 ${Date.now() - tClaude}ms,意圖: ${parsed.intent}`);
   }
 
@@ -1218,6 +1264,9 @@ async function handleTextMessage(event, client) {
     delete_note: handleDeleteNote,
     search_note: handleSearchNote,
     search_expense: handleSearchExpense,
+    add_memory: handleAddMemory,
+    query_memory: handleQueryMemory,
+    delete_memory: handleDeleteMemory,
   };
 
   const handler = HANDLERS[parsed.intent];

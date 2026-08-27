@@ -40,6 +40,9 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
 - "complete_note": 想把某幾則筆記標記為完成
 - "delete_note": 想整筆刪除某幾則筆記(不是標記完成)
 - "search_note": 想搜尋筆記(例如「找筆記 隨身碟」)
+- "add_memory": 想教機器人永久記住一個事實/偏好(用「記住」開頭,例如「記住我不吃香菜」),不是待辦事項
+- "query_memory": 想看機器人記住了哪些事
+- "delete_memory": 想刪除某幾則記住的事(例如「刪除記憶 1」)
 - "search_expense": 想搜尋記帳歷史(例如「找記帳 隨身碟」)
 - "chitchat": 以上皆非(閒聊、問候,或訊息不足以判斷)
 
@@ -73,8 +76,8 @@ const SYSTEM_PROMPT = `你是一位個人秘書機器人,負責判斷使用者�
   "endDate": "query_expense_range:ISO 日期字串 YYYY-MM-DD,單日查詢就跟 startDate 相同",
   "expenses": "add_allocation:支出項目陣列,每個是 {item, amount}",
   "savings": "add_allocation:存款項目陣列,每個是 {item, amount}",
-  "content": "add_note:筆記內容",
-  "indices": "complete_note / delete_note:第幾則的整數陣列,例如 [1] 或 [1,2]",
+  "content": "add_note:筆記內容。add_memory:要記住的內容",
+  "indices": "complete_note / delete_note / delete_memory:第幾則的整數陣列,例如 [1] 或 [1,2]",
   "reason": "chitchat:簡短說明為什麼判斷成閒聊"
 }
 
@@ -94,7 +97,8 @@ function extractJson(text) {
 }
 
 // 解析一則規則判斷不出來的訊息,回傳跟 ruleParser 一致形狀的物件
-async function parseWithClaude(text) {
+// memories:使用者教機器人記住的固定事實/偏好(字串陣列),用來幫助判斷語意模糊的訊息
+async function parseWithClaude(text, memories = []) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error('缺少 ANTHROPIC_API_KEY,請至 .env 設定 Claude API 金鑰。');
@@ -112,11 +116,15 @@ async function parseWithClaude(text) {
     weekday: 'long',
   });
 
+  const memoryBlock = memories.length
+    ? `使用者過去教機器人記住的偏好/事實(可以用來幫助判斷這句話真正的意思):\n${memories.map((m) => `- ${m}`).join('\n')}\n\n`
+    : '';
+
   const message = await client.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 512,
     system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: `現在時間:${nowStr}(台灣時區 UTC+8)\n使用者訊息:「${text}」` }],
+    messages: [{ role: 'user', content: `${memoryBlock}現在時間:${nowStr}(台灣時區 UTC+8)\n使用者訊息:「${text}」` }],
   });
 
   const rawText = message.content
@@ -336,6 +344,25 @@ async function parseWithClaude(text) {
   if (parsed.intent === 'search_note' || parsed.intent === 'search_expense') {
     if (!parsed.keyword) return { intent: 'chitchat', reason: '沒有指明要搜尋什麼' };
     return { intent: parsed.intent, keyword: String(parsed.keyword).slice(0, 50) };
+  }
+
+  if (parsed.intent === 'add_memory') {
+    if (!parsed.content) return { intent: 'chitchat', reason: '沒有辨識出要記住的內容' };
+    return { intent: 'add_memory', content: String(parsed.content).slice(0, 200) };
+  }
+
+  if (parsed.intent === 'query_memory') {
+    return { intent: 'query_memory' };
+  }
+
+  if (parsed.intent === 'delete_memory') {
+    const indices = Array.isArray(parsed.indices)
+      ? parsed.indices.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+      : [];
+    if (!indices.length) {
+      return { intent: 'chitchat', reason: '沒有指明要刪除第幾則記憶' };
+    }
+    return { intent: 'delete_memory', indices };
   }
 
   if (parsed.intent === 'query_savings') {

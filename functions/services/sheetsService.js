@@ -11,6 +11,7 @@ const BUDGET_SHEET = '預算';
 const ACCOUNT_SHEET = '帳戶';
 const TRANSFER_SHEET = '轉帳';
 const CATEGORY_RULE_SHEET = '自訂分類';
+const MEMORY_SHEET = '記憶';
 const DEFAULT_ACCOUNT = '現金';
 
 // 尚未跑過 setup-sheets.js 時,Secret 會是這個佔位值
@@ -516,6 +517,43 @@ async function searchNotes(auth, keyword) {
     .filter((n) => n.content && n.content.includes(keyword));
 }
 
+// ── 記憶(使用者教機器人記住的固定事實/偏好,判斷不出來時會餵給 Claude 參考)──
+
+async function addMemory(auth, content) {
+  const { date } = taipeiNowParts();
+  await appendRow(auth, MEMORY_SHEET, [date, content]);
+  return { date, content };
+}
+
+async function getMemories(auth) {
+  const rows = await readRows(auth, MEMORY_SHEET);
+  return rows
+    .map((r, idx) => ({ rowIndex: idx + 2, date: r[0], content: r[1] }))
+    .filter((m) => m.content);
+}
+
+// 整筆刪除記憶,一次可以刪多則(displayIndices 對應 getMemories 的顯示順序,n 從 1 開始)
+async function deleteMemories(auth, displayIndices) {
+  const all = await getMemories(auth);
+  const targets = displayIndices.map((i) => all[i - 1]).filter(Boolean);
+  if (!targets.length) return [];
+
+  const sheets = google.sheets({ version: 'v4', auth });
+  const sheetId = await getSheetId(auth, MEMORY_SHEET);
+
+  const sortedDesc = [...targets].sort((a, b) => b.rowIndex - a.rowIndex);
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: getSpreadsheetId(),
+    requestBody: {
+      requests: sortedDesc.map((t) => ({
+        deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: t.rowIndex - 1, endIndex: t.rowIndex } },
+      })),
+    },
+  });
+
+  return targets;
+}
+
 module.exports = {
   addExpense,
   addExpenses,
@@ -547,12 +585,16 @@ module.exports = {
   completeNotes,
   deleteNotes,
   searchNotes,
+  addMemory,
+  getMemories,
+  deleteMemories,
   EXPENSE_SHEET,
   NOTE_SHEET,
   BUDGET_SHEET,
   ACCOUNT_SHEET,
   TRANSFER_SHEET,
   CATEGORY_RULE_SHEET,
+  MEMORY_SHEET,
   DEFAULT_ACCOUNT,
   SETUP_HINT,
 };

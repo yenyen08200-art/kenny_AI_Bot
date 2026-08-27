@@ -227,6 +227,25 @@ function tryParseNote(text) {
   return null;
 }
 
+// ── 記憶(教機器人記住固定事實/偏好,用「記住」跟筆記用的「記得/記一下」區分)──
+
+function tryParseMemory(text) {
+  const del = text.match(/^(?:刪除|刪掉|移除)\s*記憶\s*(?:第)?\s*([\d,、\s]+)\s*則?/);
+  if (del) {
+    const indices = parseIndexList(del[1]);
+    if (indices.length) return { intent: 'delete_memory', indices };
+  }
+
+  if (/我的記憶|查看記憶|記憶清單|記憶列表|你記得什麼/.test(text)) {
+    return { intent: 'query_memory' };
+  }
+
+  const add = text.match(/^(?:請)?(?:幫我)?記住\s*[::]?\s*(.+)/);
+  if (add && add[1].trim()) return { intent: 'add_memory', content: add[1].trim().slice(0, 200) };
+
+  return null;
+}
+
 // ── 記帳 ──
 
 // 月度比較要排在一般查詢前面(兩者都含「花多少」)
@@ -770,6 +789,7 @@ function parseWithRules(text) {
   return (
     tryParseHelp(trimmed) ||
     tryParseNote(trimmed) ||
+    tryParseMemory(trimmed) ||
     tryParseExpenseFix(trimmed) ||
     tryParseExpenseSearch(trimmed) ||
     tryParseBudget(trimmed) ||
